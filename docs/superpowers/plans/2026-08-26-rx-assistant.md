@@ -19,6 +19,8 @@
 - Embedding vectors are `vector(384)` (the output dimension of `all-MiniLM-L6-v2`) in both tables (spec "Data Model").
 - `rx-assistant-db` publishes host port `5433` (Postgres); `rx-assistant` publishes host port `8002` (HTTP) (spec "Docker Compose").
 - The app's own `.env`/`env_file` `DATABASE_URL` is the host-facing address (`localhost:5433`); the `rx-assistant` Compose service overrides it via a service-level `environment:` entry pointing at the `rx-assistant-db` hostname (spec "Docker Compose" — `environment:` wins over `env_file:` for the same key).
+- Postgres monitoring credentials (`POSTGRESQL_USERNAME`, `POSTGRESQL_PASSWORD`) and `LOGFIRE_INGEST_URL` live in `apps/rx-assistant/.env` like every other credential this demo uses — local-only, non-secret demo values (spec "Postgres Monitoring").
+- The OpenTelemetry Collector uses the **contrib** image (`otel/opentelemetry-collector-contrib`) — the `postgresql` receiver isn't in the core distribution (spec "Postgres Monitoring").
 
 ---
 
@@ -1556,7 +1558,178 @@ git commit -m "rx-assistant: wire pgvector-backed Postgres and app services into
 
 ---
 
-### Task 12: Final workspace verification
+### Task 12: Postgres monitoring via OpenTelemetry Collector
+
+**Files:**
+- Create: `apps/rx-assistant/db-init/01-create-monitor-role.sh` (executable)
+- Create: `apps/rx-assistant/otel-collector-config.yaml`
+- Modify: `apps/rx-assistant/.env.example`
+- Modify: `docker-compose.yml`
+
+**Interfaces:**
+- Consumes: `apps/rx-assistant/.env`'s `LOGFIRE_TOKEN` (already present from Task 1); the `rx-assistant-db` service and named volume from Task 11.
+- Produces: a `logfire_monitor` Postgres role (created on first boot of a fresh `rx_assistant_db_data` volume) and an `rx-assistant-otel-collector` Compose service shipping Postgres metrics to Logfire. Nothing downstream in this plan depends on these — this is a leaf task.
+
+This task has no automated test: it requires a real Postgres container actually booting
+(to run the init script) and, to see data land, a real Logfire account — both out of reach
+of the default `pytest` suite. Verification here is a manual Compose config check plus,
+optionally, a real `docker compose up` the user can run themselves against their own
+Logfire project.
+
+- [ ] **Step 1: Add monitoring credentials to `apps/rx-assistant/.env.example`**
+
+Append to the existing file (from Task 1):
+
+```
+# Logfire PostgreSQL monitoring (beta) — dedicated least-privilege role, scraped by the
+# OpenTelemetry Collector service below and shipped to this demo's own Logfire project.
+POSTGRESQL_USERNAME=logfire_monitor
+POSTGRESQL_PASSWORD=logfire_monitor
+# US region shown. EU accounts: https://logfire-eu.pydantic.dev. Self-hosted: your own
+# OTLP ingest URL.
+LOGFIRE_INGEST_URL=https://logfire-us.pydantic.dev
+```
+
+- [ ] **Step 2: Create `apps/rx-assistant/db-init/01-create-monitor-role.sh`**
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+# Runs automatically on first boot of a fresh rx_assistant_db_data volume (Postgres's
+# entrypoint executes every script in /docker-entrypoint-initdb.d once, in filename order,
+# only when the data directory is empty). A .sql file here can't expand environment
+# variables, so this is a shell script instead. POSTGRES_USER/POSTGRES_DB come from the
+# rx-assistant-db service's existing `environment:` block; POSTGRESQL_USERNAME/PASSWORD
+# come from the `env_file:` added in Step 4 below.
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+    CREATE USER "$POSTGRESQL_USERNAME" WITH PASSWORD '$POSTGRESQL_PASSWORD';
+    GRANT pg_monitor TO "$POSTGRESQL_USERNAME";
+EOSQL
+```
+
+Run: `chmod +x apps/rx-assistant/db-init/01-create-monitor-role.sh`
+Expected: the Postgres entrypoint only executes `docker-entrypoint-initdb.d` scripts it can
+run; without the executable bit this silently never fires.
+
+- [ ] **Step 3: Create `apps/rx-assistant/otel-collector-config.yaml`**
+
+```yaml
+receivers:
+  postgresql:
+    endpoint: rx-assistant-db:5432
+    username: ${env:POSTGRESQL_USERNAME}
+    password: ${env:POSTGRESQL_PASSWORD}
+    databases: []  # empty = all non-template databases
+    collection_interval: 10s
+    tls:
+      insecure: true  # the pgvector/pgvector:pg16 image has no TLS cert configured
+    metrics:
+      postgresql.database.locks:
+        enabled: true
+      postgresql.deadlocks:
+        enabled: true
+      postgresql.sequential_scans:
+        enabled: true
+      postgresql.blks_hit:
+        enabled: true
+      postgresql.blks_read:
+        enabled: true
+      postgresql.temp_files:
+        enabled: true
+      postgresql.temp.io:
+        enabled: true
+      postgresql.wal.delay:
+        enabled: true
+      postgresql.bgwriter.maxwritten:
+        enabled: true
+      postgresql.bgwriter.buffers.allocated:
+        enabled: true
+      postgresql.index.size:
+        enabled: true
+processors:
+  resource/postgresql:
+    attributes:
+      - key: service.name
+        value: postgresql
+        action: upsert
+      - key: service.namespace
+        value: infrastructure
+        action: upsert
+      - key: service.instance.id
+        value: "rx-assistant-db-local"
+        action: upsert
+  batch: {}
+exporters:
+  otlphttp/logfire:
+    endpoint: ${env:LOGFIRE_INGEST_URL}
+    headers:
+      Authorization: Bearer ${env:LOGFIRE_TOKEN}
+service:
+  pipelines:
+    metrics/postgresql:
+      receivers: [postgresql]
+      processors: [resource/postgresql, batch]
+      exporters: [otlphttp/logfire]
+```
+
+- [ ] **Step 4: Wire the init script and Collector into `docker-compose.yml`**
+
+Modify the `rx-assistant-db` service added in Task 11 — add an `env_file:` entry and a
+second volume mount (keep everything else on that service unchanged):
+
+```yaml
+  rx-assistant-db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: rx_assistant
+      POSTGRES_PASSWORD: rx_assistant
+      POSTGRES_DB: rx_assistant
+    env_file: apps/rx-assistant/.env
+    volumes:
+      - rx_assistant_db_data:/var/lib/postgresql/data
+      - ./apps/rx-assistant/db-init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rx_assistant"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    profiles: ["rx-assistant", "all"]
+```
+
+Then add a new service after `rx-assistant`:
+
+```yaml
+  rx-assistant-otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.116.1
+    volumes:
+      - ./apps/rx-assistant/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    env_file: apps/rx-assistant/.env
+    depends_on:
+      rx-assistant-db:
+        condition: service_healthy
+    profiles: ["rx-assistant", "all"]
+```
+
+- [ ] **Step 5: Validate the compose config**
+
+Run: `cp apps/rx-assistant/.env.example apps/rx-assistant/.env` (skip if already copied from an earlier task)
+Run: `docker compose --profile rx-assistant config`
+Expected: resolves `rx-assistant-db`, `rx-assistant`, and `rx-assistant-otel-collector` with no errors, and the rendered `rx-assistant-db` service shows both volume mounts.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add apps/rx-assistant/db-init/01-create-monitor-role.sh apps/rx-assistant/otel-collector-config.yaml \
+  apps/rx-assistant/.env.example docker-compose.yml
+git commit -m "rx-assistant: monitor Postgres via OTel Collector into Logfire"
+```
+
+---
+
+### Task 13: Final workspace verification
 
 **Files:** none created or modified — verification only.
 
@@ -1575,14 +1748,21 @@ Expected: all tests pass, including every `apps/rx-assistant/tests/` module from
 - [ ] **Step 3: Validate both Compose profiles independently and combined**
 
 Run: `docker compose --profile rx-assistant config`
-Expected: resolves `rx-assistant-db` + `rx-assistant`.
+Expected: resolves `rx-assistant-db`, `rx-assistant`, and `rx-assistant-otel-collector`.
 
 Run: `docker compose --profile all config`
-Expected: resolves all four services (`chat`, `rx-assistant-db`, `rx-assistant`, plus anything else on `all`).
+Expected: resolves all four services (`chat`, `rx-assistant-db`, `rx-assistant`, `rx-assistant-otel-collector`).
 
-- [ ] **Step 4: Confirm no stray `.env` committed**
+- [ ] **Step 4: Confirm the monitoring init script is executable**
+
+Run: `git ls-files -s apps/rx-assistant/db-init/01-create-monitor-role.sh`
+Expected: mode `100755` (executable) — mode `100644` means Task 12 Step 2's `chmod +x` either
+wasn't run or wasn't staged, and the init script would silently never run against a fresh
+`rx_assistant_db_data` volume.
+
+- [ ] **Step 5: Confirm no stray `.env` committed**
 
 Run: `git status --porcelain apps/rx-assistant/.env`
 Expected: no output (untracked or ignored — the repo's root `.gitignore` already excludes `apps/*/.env`; do not add `apps/rx-assistant/.env` with `git add`).
 
-No commit for this task — it's verification of work already committed in Tasks 1–11.
+No commit for this task — it's verification of work already committed in Tasks 1–12.
