@@ -27,6 +27,10 @@ def _clear_model_cache() -> None:
     """rx_assistant.main._MODEL_CACHE is module-level and outlives create_rx_app(), so
     clear it between tests — otherwise a model cached under one test's monkeypatched
     get_model would silently be reused by the next test's supposedly fresh monkeypatch."""
-    import rx_assistant.main
+    try:
+        import rx_assistant.main
 
-    rx_assistant.main._MODEL_CACHE.clear()
+        rx_assistant.main._MODEL_CACHE.clear()
+    except ModuleNotFoundError:
+        # rx_assistant.main may not exist yet in earlier tasks
+        pass
