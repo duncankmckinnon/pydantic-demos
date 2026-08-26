@@ -3,6 +3,7 @@ from pydantic_evals import Case, Dataset
 
 from chat.agent import MODEL_CHOICES
 from chat.evals.efficiency import chat_efficiency_judge
+from chat.evals.tool_use import chat_tool_use_judge
 from demo_core.evals import HarnessJudge
 from demo_core.models import get_model
 from demo_core.settings import GatewaySettings
@@ -43,5 +44,5 @@ chat_eval_dataset = Dataset(
             expected_output=None,
         ),
     ],
-    evaluators=[chat_quality_judge, chat_efficiency_judge],
+    evaluators=[chat_quality_judge, chat_efficiency_judge, chat_tool_use_judge],
 )
