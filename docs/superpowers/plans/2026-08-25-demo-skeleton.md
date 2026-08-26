@@ -1455,3 +1455,39 @@ model or a real Logfire project. Once real credentials are available, do this on
    back and that switching models mid-conversation works.
 4. Check the configured Logfire project for the resulting trace (agent run span, model
    request span, and host resource metrics).
+
+## Addendum: Final Whole-Branch Review Corrections
+
+The final review (after all 12 tasks landed) found several real cross-task defects
+that no single task-scoped review could see — see the branch's git history for the
+fix commits. Corrections to this plan's earlier text, for anyone reading it later:
+
+- **`LOGFIRE_PROJECT` does not exist as a Logfire concept** — `logfire.configure()`
+  has no such env var; a project is derived from the token itself. It has been
+  removed from `LogfireSettings`, `.env.example`, and `AGENTS.md`. Wherever this
+  plan's task text above still shows `LOGFIRE_PROJECT=` or a `project` field on
+  `LogfireSettings`, treat that as superseded.
+- **`.env` files are now actually loaded** by each app (via `load_dotenv()` in
+  `chat/__init__.py`, not `main.py` as originally planned — `evals/run.py` doesn't
+  import `main.py`, so the package `__init__` is the one place covering both
+  entrypoints). Earlier task text describing settings as reading only from ambient
+  env vars/Docker's `env_file:` is superseded.
+- **`configure_logfire()` gained a `token: str | None = None` parameter**, wired
+  from `LogfireSettings`, making that settings class load-bearing instead of dead
+  code.
+- **`uv run pytest` needs `--import-mode=importlib`** (added to root
+  `pyproject.toml`) so a second demo's `tests/` package doesn't collide with the
+  first's at collection time — a real problem for the whole point of this
+  skeleton being copied.
+- Per-request Gateway model construction in `chat/main.py` is now cached
+  (`_MODEL_CACHE`) instead of rebuilt (and its HTTP client leaked) on every
+  message; malformed `model_choice` values now get a 400, not a 500.
+- `evals/run.py` now calls `configure_logfire(...)` so real eval runs are traced,
+  matching this plan's original claim that they would be.
+- The chat eval dataset's judge agent now uses `output_type=float` instead of
+  parsing free text, per the fragility `HarnessJudge`'s own task review flagged.
+
+The task text elsewhere in this document was left as originally written (a
+historical record of what was planned and learned along the way) rather than
+rewritten throughout — this addendum is the pointer to what changed after the
+fact.

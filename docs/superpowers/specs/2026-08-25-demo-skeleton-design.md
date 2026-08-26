@@ -302,3 +302,12 @@ the env-file and workspace-member conventions already defined.
   and `logfire:logfire-instrumentation` skills should be consulted again
   during implementation for exact call signatures, rather than relying solely
   on this design doc.
+
+## Addendum: Corrections from the Final Whole-Branch Review
+
+`LOGFIRE_PROJECT` was a mistaken assumption in this spec — Logfire has no such
+concept; a project is derived from the token. `LogfireSettings` now has only a
+`token` field, and it is wired into `configure_logfire()` (an addition to that
+function's signature beyond what this spec originally described). See the
+implementation plan's own addendum for the full list of corrections found
+after all tasks landed.
