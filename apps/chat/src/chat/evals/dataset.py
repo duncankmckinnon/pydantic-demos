@@ -16,6 +16,9 @@ from demo_core.settings import GatewaySettings
 _judge_agent = Agent(
     get_model(*MODEL_CHOICES[0], GatewaySettings()),
     name="chat_eval_judge",
+    # HarnessJudge does float(result.output), so let pydantic-ai enforce a numeric output
+    # rather than trusting the model to reply with a bare number in prose.
+    output_type=float,
     instructions=(
         "You score a chatbot reply from 0 to 1 against the given rubric. "
         "Reply with only the numeric score."
