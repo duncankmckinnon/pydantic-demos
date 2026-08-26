@@ -44,7 +44,14 @@ into `docker-compose.yml`.
    level (`os.environ[...] = ...`, not `setdefault`) so settings objects can construct at
    import time without a real `.env` and a developer's real credentials can never leak into
    a test run. Include `os.environ["LOGFIRE_SEND_TO_LOGFIRE"] = "false"` so the app module's
-   own import-time app construction stays offline.
+   own import-time app construction stays offline. **Do not add a `tests/__init__.py`** —
+   making `tests` a Python package collides with every other demo's `tests` package at
+   collection time (`uv run pytest` from the repo root, not just one demo's directory).
+   Root `pyproject.toml` sets `--import-mode=importlib`, which avoids the loud
+   `ImportPathMismatchError` this would otherwise cause, but does NOT make an `__init__.py`
+   safe to add — without one, importlib mode gives each demo's tests a distinct module
+   identity; with one, a same-named module can get silently reused across demos and one
+   demo's tests get skipped without any error. Leave `apps/<name>/tests/` a plain directory.
 6. `apps/<name>/Dockerfile` — copy `apps/chat/Dockerfile`, swapping `chat` for `<name>`.
    Remember the build context is the **repo root**, not `apps/<name>`, because of the
    `demo-core` path dependency.
