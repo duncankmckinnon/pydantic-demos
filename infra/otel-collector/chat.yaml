@@ -1,0 +1,30 @@
+receivers:
+  docker_stats:
+    collection_interval: 30s
+    container_labels_to_metric_labels:
+      com.docker.compose.project: compose.project
+      com.docker.compose.service: compose.service
+
+processors:
+  resourcedetection:
+    detectors: [docker]
+  # Scopes this collector to only chat's own container(s), since docker_stats otherwise
+  # reports every container on the host (including unrelated demos and this collector
+  # itself) into whichever Logfire project this collector's token points at.
+  filter/chat:
+    error_mode: ignore
+    metric_conditions:
+      - resource.attributes["compose.service"] != "chat"
+
+exporters:
+  otlphttp/logfire:
+    endpoint: https://logfire-us.pydantic.dev
+    headers:
+      Authorization: ${env:LOGFIRE_TOKEN}
+
+service:
+  pipelines:
+    metrics:
+      receivers: [docker_stats]
+      processors: [resourcedetection, filter/chat]
+      exporters: [otlphttp/logfire]

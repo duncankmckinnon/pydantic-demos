@@ -61,6 +61,32 @@ separate project setting. `docker-compose.yml` loads each service's `.env` via i
 `apps/<name>` whose config points at another demo's Compose service name as a base URL and
 calls it over HTTP, the same as any external API.
 
+## Infrastructure monitoring
+
+Each demo that wants container metrics gets its own OpenTelemetry Collector: `infra/otel-collector/<name>.yaml`
+runs one via the `otel-collector-<name>` service in `docker-compose.yml`, using the
+`docker_stats` receiver to send container CPU/memory/IO metrics to Logfire. It reuses that
+demo's own `apps/<name>/.env` for `LOGFIRE_TOKEN` rather than minting a separate one — since
+the Logfire project is derived from the token, this ties the collector's metrics to that
+demo's project. It shares that demo's Compose profiles, so `docker compose --profile <name> up`
+(or `--profile all`) starts it automatically; view the data under that project's
+Docker/Infrastructure view in Logfire.
+
+`docker_stats` reads from the shared `docker.sock` and sees *every* container on the host, not
+just the one demo's — so each collector config includes a `filter` processor (e.g. `filter/chat`
+in `infra/otel-collector/chat.yaml`) that keeps only metrics whose `compose.service` resource
+attribute matches that demo's own Compose service name, dropping everything else (other demos'
+containers, the collector's own container, unrelated host containers). Without it, every
+collector would report the whole host's containers into its own project, duplicating data and
+defeating the point of each demo owning its own credentials.
+
+One collector should never hold more than one demo's `LOGFIRE_TOKEN` — routing different
+containers to different projects from a single shared collector would mean centralizing every
+demo's credentials into one place, which breaks the same per-app credential isolation
+`apps/<name>/.env` exists to provide. Adding a new demo's infra monitoring means copying the
+`otel-collector-chat` / `infra/otel-collector/chat.yaml` pattern with that demo's own name and
+`.env`, not extending an existing collector.
+
 ## Testing & evals
 
 - Unit tests (`apps/<name>/tests/`): use `pydantic_ai.models.test.TestModel` or

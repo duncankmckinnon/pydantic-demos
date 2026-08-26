@@ -7,3 +7,12 @@ services:
     ports:
       - "8001:8000"
     profiles: ["chat", "all"]
+
+  otel-collector-chat:
+    image: otel/opentelemetry-collector-contrib:latest
+    user: "0:0"
+    volumes:
+      - ./infra/otel-collector/chat.yaml:/etc/otelcol-contrib/config.yaml
+      - /var/run/docker.sock:/var/run/docker.sock
+    env_file: apps/chat/.env
+    profiles: ["chat", "all"]
