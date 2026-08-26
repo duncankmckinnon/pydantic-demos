@@ -1,0 +1,9 @@
+services:
+  chat:
+    build:
+      context: .
+      dockerfile: apps/chat/Dockerfile
+    env_file: apps/chat/.env
+    ports:
+      - "8001:8000"
+    profiles: ["chat", "all"]
