@@ -25,6 +25,13 @@ _judge_agent = Agent(
     ),
 )
 
+# Named (rather than built inline in chat_eval_dataset below) so chat.evals.online can reuse
+# the exact same judge for live traffic — one rubric, not two copies that can drift apart.
+chat_quality_judge = HarnessJudge(
+    agent=_judge_agent,
+    rubric="Score 1.0 if the reply is a sensible, in-character response for a general assistant; 0.0 otherwise.",
+)
+
 chat_eval_dataset = Dataset(
     name="chat_demo_eval",
     cases=[
@@ -35,10 +42,5 @@ chat_eval_dataset = Dataset(
             expected_output=None,
         ),
     ],
-    evaluators=[
-        HarnessJudge(
-            agent=_judge_agent,
-            rubric="Score 1.0 if the reply is a sensible, in-character response for a general assistant; 0.0 otherwise.",
-        )
-    ],
+    evaluators=[chat_quality_judge],
 )

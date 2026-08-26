@@ -16,6 +16,13 @@ os.environ["LOGFIRE_TOKEN"] = "test-token"
 os.environ["LOGFIRE_SEND_TO_LOGFIRE"] = "false"
 
 import logfire  # noqa: E402
+import pydantic_evals.online  # noqa: E402
+
+# The chat agent has an online-eval capability (chat.evals.online.CHAT_ONLINE_EVALUATION)
+# whose judge evaluator makes a real Gateway call. Disabled globally here — same reasoning
+# as the Gateway/Logfire env vars above — so no test triggers a real model call in the
+# background just by hitting /api/chat.
+pydantic_evals.online.configure(enabled=False)
 
 
 @pytest.fixture(autouse=True, scope="session")

@@ -1,4 +1,6 @@
-from pydantic_ai import Agent
+from collections.abc import Sequence
+
+from pydantic_ai import Agent, AgentCapability
 
 from demo_core.models import get_model
 from demo_core.settings import GatewaySettings
@@ -10,11 +12,17 @@ MODEL_CHOICES: list[tuple[str, str]] = [
 ]
 
 
-def build_agent(settings: GatewaySettings) -> Agent:
-    """Build the chat agent using the first entry in MODEL_CHOICES as its default model."""
+def build_agent(settings: GatewaySettings, *, capabilities: Sequence[AgentCapability] = ()) -> Agent:
+    """Build the chat agent using the first entry in MODEL_CHOICES as its default model.
+
+    `capabilities` defaults to none so offline eval runs (chat.evals.run) stay plain; callers
+    that want online evaluation attached (chat.main) pass it explicitly — keeps this module
+    decoupled from chat.evals, which would otherwise import back into this module.
+    """
     api_format, model_name = MODEL_CHOICES[0]
     return Agent(
         get_model(api_format, model_name, settings),
         name="chat_agent",
         instructions="You are a helpful, concise assistant.",
+        capabilities=list(capabilities),
     )

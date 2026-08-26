@@ -92,9 +92,20 @@ demo's credentials into one place, which breaks the same per-app credential isol
 - Unit tests (`apps/<name>/tests/`): use `pydantic_ai.models.test.TestModel` or
   `pydantic_ai.models.function.FunctionModel` via `agent.override(model=...)` — never call
   real models in the default test suite. Run with `uv run pytest`.
-- Evals (`apps/<name>/src/<name>/evals/`): real-model-call `pydantic_evals` `Dataset`s,
+- Offline evals (`apps/<name>/src/<name>/evals/`): real-model-call `pydantic_evals` `Dataset`s,
   scored with built-in evaluators and/or `demo_core.evals.HarnessJudge`. Run manually via
   `uv run --package <name> python -m <name>.evals.run` — not part of the default test suite.
+- Online evals: attach a `pydantic_evals.online_capability.OnlineEvaluation` capability to the
+  agent (see `chat.evals.online.CHAT_ONLINE_EVALUATION`, wired in via `build_agent`'s
+  `capabilities` param) to score real production/staging calls in the background — reuse the
+  same `Evaluator` instances as the offline `Dataset` where it makes sense (e.g.
+  `chat_quality_judge`) rather than defining the rubric twice. Sample real-model-call
+  evaluators well below 1.0 (`OnlineEvaluator(..., sample_rate=0.2)`) since they run inline
+  with production traffic; free/structural evaluators can run on every call. Results appear as
+  `gen_ai.evaluation.result` OTel events in Logfire's Live Evaluations view. Every test suite
+  must call `pydantic_evals.online.configure(enabled=False)` in `conftest.py` (see `chat`'s) —
+  otherwise a sampled real-model-call evaluator fires in the background during ordinary
+  endpoint tests.
 
 ## Adding a new demo
 

@@ -10,6 +10,7 @@ from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models import Model
 
 from chat.agent import MODEL_CHOICES, build_agent
+from chat.evals.online import CHAT_ONLINE_EVALUATION
 from demo_core.logfire_setup import configure_logfire
 from demo_core.models import get_model
 from demo_core.settings import GatewaySettings, LogfireSettings
@@ -64,7 +65,7 @@ def create_chat_app(send_to_logfire: bool | None = None) -> FastAPI:
     app = create_app(title="Chat Demo")
 
     gateway_settings = GatewaySettings()
-    agent = build_agent(gateway_settings)
+    agent = build_agent(gateway_settings, capabilities=[CHAT_ONLINE_EVALUATION])
 
     @app.get("/")
     async def index(request: Request):
