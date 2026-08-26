@@ -1,6 +1,7 @@
 from pydantic_evals.online import OnlineEvaluator
 
 from chat.evals.dataset import chat_quality_judge
+from chat.evals.efficiency import chat_efficiency_judge
 from chat.evals.online import CHAT_ONLINE_EVALUATION, ReplyNotEmpty
 
 
@@ -12,6 +13,7 @@ def test_online_evaluation_wraps_expected_evaluators() -> None:
 
     assert any(isinstance(ev, ReplyNotEmpty) for ev in evaluators)
     assert chat_quality_judge in evaluators
+    assert chat_efficiency_judge in evaluators
 
 
 def test_reply_not_empty_evaluator() -> None:
