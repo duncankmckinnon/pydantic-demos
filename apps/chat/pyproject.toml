@@ -5,9 +5,11 @@ requires-python = ">=3.11"
 dependencies = [
     "demo-core",
     "pydantic-ai",
+    "pydantic-evals",
     "fastapi",
     "uvicorn[standard]",
     "jinja2",
+    "python-dotenv",
 ]
 
 [tool.uv.sources]
