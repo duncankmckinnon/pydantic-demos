@@ -1,12 +1,16 @@
 from pydantic_ai.models import Model
 from pydantic_ai.models.anthropic import AnthropicModel
-from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 from pydantic_ai.providers.gateway import gateway_provider
 
 from demo_core.settings import GatewaySettings
 
 _MODEL_CLASSES: dict[str, type[Model]] = {
     "openai": OpenAIChatModel,
+    # Distinct from "openai": OpenAIChatModel (Chat Completions) doesn't support native
+    # WebSearchTool for general models — only OpenAI's dedicated "-search-preview" model
+    # variants do. OpenAIResponsesModel (Responses API) supports it for any model.
+    "openai-responses": OpenAIResponsesModel,
     "anthropic": AnthropicModel,
 }
 

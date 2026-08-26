@@ -1,6 +1,17 @@
 import chat.main
 from fastapi.testclient import TestClient
-from pydantic_ai.models.test import TestModel
+from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
+from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+
+def _fixed_reply_model(text: str = "success (no tool calls)") -> FunctionModel:
+    # chat_agent always carries WebSearch(), a native tool — TestModel unconditionally rejects
+    # any agent with a native tool attached ("TestModel does not support built-in tools"), so
+    # FunctionModel (which explicitly supports built-in tools) stands in for it in these tests.
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        return ModelResponse(parts=[TextPart(text)])
+
+    return FunctionModel(respond)
 
 
 def test_index_page_lists_model_choices() -> None:
@@ -17,12 +28,12 @@ def test_index_page_lists_model_choices() -> None:
 
 def test_chat_endpoint_returns_reply_and_sets_session_cookie(monkeypatch) -> None:
     app = chat.main.create_chat_app(send_to_logfire=False)
-    monkeypatch.setattr(chat.main, "get_model", lambda api_format, model_name, settings: TestModel())
+    monkeypatch.setattr(chat.main, "get_model", lambda api_format, model_name, settings: _fixed_reply_model())
     client = TestClient(app)
 
     response = client.post(
         "/api/chat",
-        json={"message": "hello", "model_choice": "anthropic:claude-sonnet-4-6"},
+        json={"message": "hello", "model_choice": "anthropic:claude-sonnet-5"},
     )
 
     assert response.status_code == 200
@@ -32,17 +43,17 @@ def test_chat_endpoint_returns_reply_and_sets_session_cookie(monkeypatch) -> Non
 
 def test_chat_endpoint_reuses_session_history(monkeypatch) -> None:
     app = chat.main.create_chat_app(send_to_logfire=False)
-    monkeypatch.setattr(chat.main, "get_model", lambda api_format, model_name, settings: TestModel())
+    monkeypatch.setattr(chat.main, "get_model", lambda api_format, model_name, settings: _fixed_reply_model())
     client = TestClient(app)
 
     first = client.post(
-        "/api/chat", json={"message": "hello", "model_choice": "anthropic:claude-sonnet-4-6"}
+        "/api/chat", json={"message": "hello", "model_choice": "anthropic:claude-sonnet-5"}
     )
     session_cookie = first.cookies["session_id"]
     client.cookies.set("session_id", session_cookie)
 
     second = client.post(
-        "/api/chat", json={"message": "again", "model_choice": "anthropic:claude-sonnet-4-6"}
+        "/api/chat", json={"message": "again", "model_choice": "anthropic:claude-sonnet-5"}
     )
 
     assert second.status_code == 200
@@ -51,7 +62,7 @@ def test_chat_endpoint_reuses_session_history(monkeypatch) -> None:
 
 def test_chat_endpoint_rejects_unknown_model_choice(monkeypatch) -> None:
     app = chat.main.create_chat_app(send_to_logfire=False)
-    monkeypatch.setattr(chat.main, "get_model", lambda api_format, model_name, settings: TestModel())
+    monkeypatch.setattr(chat.main, "get_model", lambda api_format, model_name, settings: _fixed_reply_model())
     client = TestClient(app)
 
     # No colon at all — used to raise ValueError and surface as a 500.
@@ -67,12 +78,12 @@ def test_chat_endpoint_rejects_unknown_model_choice(monkeypatch) -> None:
 
 def test_chat_endpoint_ignores_non_uuid_session_cookie(monkeypatch) -> None:
     app = chat.main.create_chat_app(send_to_logfire=False)
-    monkeypatch.setattr(chat.main, "get_model", lambda api_format, model_name, settings: TestModel())
+    monkeypatch.setattr(chat.main, "get_model", lambda api_format, model_name, settings: _fixed_reply_model())
     client = TestClient(app)
     client.cookies.set("session_id", "../../etc/passwd")
 
     response = client.post(
-        "/api/chat", json={"message": "hello", "model_choice": "anthropic:claude-sonnet-4-6"}
+        "/api/chat", json={"message": "hello", "model_choice": "anthropic:claude-sonnet-5"}
     )
 
     assert response.status_code == 200

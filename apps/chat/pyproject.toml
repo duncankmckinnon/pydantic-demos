@@ -10,6 +10,7 @@ dependencies = [
     "uvicorn[standard]",
     "jinja2",
     "python-dotenv",
+    "pydantic-ai-harness>=0.25.0",
 ]
 
 [tool.uv.sources]
