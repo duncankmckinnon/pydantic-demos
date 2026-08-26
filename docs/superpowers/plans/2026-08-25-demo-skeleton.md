@@ -1072,6 +1072,7 @@ Create `apps/chat/src/chat/evals/dataset.py`:
 from pydantic_ai import Agent
 from pydantic_evals import Case, Dataset
 
+from chat.agent import MODEL_CHOICES
 from demo_core.evals import HarnessJudge
 from demo_core.models import get_model
 from demo_core.settings import GatewaySettings
@@ -1081,8 +1082,10 @@ from demo_core.settings import GatewaySettings
 # call (see demo_core.models.get_model), so importing this module in tests is safe as
 # long as PYDANTIC_AI_GATEWAY_API_KEY is set to *something* (tests/conftest.py sets a
 # dummy value) — only chat_eval_dataset.evaluate_sync(...) actually calls the network.
+# Reuses chat.agent's own default model choice rather than hardcoding it a second time,
+# so the two can't silently drift out of sync.
 _judge_agent = Agent(
-    get_model("anthropic", "claude-sonnet-4-6", GatewaySettings()),
+    get_model(*MODEL_CHOICES[0], GatewaySettings()),
     name="chat_eval_judge",
     instructions=(
         "You score a chatbot reply from 0 to 1 against the given rubric. "
