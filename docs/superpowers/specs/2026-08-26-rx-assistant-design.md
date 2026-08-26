@@ -148,7 +148,7 @@ Compose-managed Postgres, works without edits.
 
 ## Docker Compose
 
-Two new services, both under `profiles: ["rx-assistant", "all"]`:
+Three new services, all under `profiles: ["rx-assistant", "all"]`:
 
 ```yaml
 rx-assistant-db:
@@ -157,8 +157,10 @@ rx-assistant-db:
     POSTGRES_USER: rx_assistant
     POSTGRES_PASSWORD: rx_assistant
     POSTGRES_DB: rx_assistant
+  env_file: apps/rx-assistant/.env   # supplies POSTGRESQL_USERNAME/PASSWORD to the init script below
   volumes:
     - rx_assistant_db_data:/var/lib/postgresql/data
+    - ./apps/rx-assistant/db-init:/docker-entrypoint-initdb.d:ro
   ports:
     - "5433:5432"          # host access for local `uv run` ingestion/dev
   healthcheck:
@@ -182,6 +184,16 @@ rx-assistant:
     - "8002:8000"
   profiles: ["rx-assistant", "all"]
 
+rx-assistant-otel-collector:
+  image: otel/opentelemetry-collector-contrib:0.116.1
+  volumes:
+    - ./apps/rx-assistant/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+  env_file: apps/rx-assistant/.env
+  depends_on:
+    rx-assistant-db:
+      condition: service_healthy
+  profiles: ["rx-assistant", "all"]
+
 volumes:
   rx_assistant_db_data:
 ```
@@ -192,6 +204,96 @@ Compose's `environment:` takes precedence over `env_file:` for the same key. Ing
 inside the container (e.g. `docker compose --profile rx-assistant exec rx-assistant python
 -m rx_assistant.ingest`) picks up the in-container URL automatically; ingestion run from the
 host uses the `.env` value against the published `5433` port.
+
+## Postgres Monitoring (Logfire, beta)
+
+`rx-assistant-db`'s metrics (locks, deadlocks, sequential scans, cache hit ratio, temp
+files/IO, WAL delay, bgwriter activity, index size) are shipped to this demo's own Logfire
+project via an OpenTelemetry Collector, following Logfire's current Postgres-monitoring
+integration guide (a beta offering).
+
+**Monitoring role:** a dedicated, least-privilege login, created once via a Postgres
+`docker-entrypoint-initdb.d` init script (`apps/rx-assistant/db-init/01-create-monitor-role.sh`,
+executable, since a `.sql` file in that directory can't expand environment variables) that
+grants the built-in `pg_monitor` role — read-only access to the statistics views the
+collector's `postgresql` receiver reads, nothing else:
+
+```sql
+CREATE USER "$POSTGRESQL_USERNAME" WITH PASSWORD '$POSTGRESQL_PASSWORD';
+GRANT pg_monitor TO "$POSTGRESQL_USERNAME";
+```
+
+**Collector config** (`apps/rx-assistant/otel-collector-config.yaml`, mounted read-only into
+the `rx-assistant-otel-collector` service): the `postgresql` receiver only ships in the
+**contrib** Collector distribution, hence `otel/opentelemetry-collector-contrib` rather than
+the core image. Two deltas from the stock integration snippet, both required for this local
+Compose topology rather than a bare-metal host:
+
+- `endpoint: rx-assistant-db:5432` (the Compose service hostname, not `localhost` — the
+  collector runs in its own container).
+- `tls: insecure: true` uncommented — the `pgvector/pgvector:pg16` image has no TLS
+  certificate configured out of the box, so the receiver's TLS-by-default connection would
+  otherwise fail.
+
+`service.instance.id` is set to the fixed string `"rx-assistant-db-local"` — this demo runs
+a single, non-scaled Postgres instance, so a static value already satisfies "stable across
+collector restarts."
+
+```yaml
+receivers:
+  postgresql:
+    endpoint: rx-assistant-db:5432
+    username: ${env:POSTGRESQL_USERNAME}
+    password: ${env:POSTGRESQL_PASSWORD}
+    databases: []  # empty = all non-template databases
+    collection_interval: 10s
+    tls:
+      insecure: true
+    metrics:
+      postgresql.database.locks: { enabled: true }
+      postgresql.deadlocks: { enabled: true }
+      postgresql.sequential_scans: { enabled: true }
+      postgresql.blks_hit: { enabled: true }
+      postgresql.blks_read: { enabled: true }
+      postgresql.temp_files: { enabled: true }
+      postgresql.temp.io: { enabled: true }
+      postgresql.wal.delay: { enabled: true }
+      postgresql.bgwriter.maxwritten: { enabled: true }
+      postgresql.bgwriter.buffers.allocated: { enabled: true }
+      postgresql.index.size: { enabled: true }
+processors:
+  resource/postgresql:
+    attributes:
+      - { key: service.name, value: postgresql, action: upsert }
+      - { key: service.namespace, value: infrastructure, action: upsert }
+      - { key: service.instance.id, value: "rx-assistant-db-local", action: upsert }
+  batch: {}
+exporters:
+  otlphttp/logfire:
+    endpoint: ${env:LOGFIRE_INGEST_URL}
+    headers:
+      Authorization: Bearer ${env:LOGFIRE_TOKEN}
+service:
+  pipelines:
+    metrics/postgresql:
+      receivers: [postgresql]
+      processors: [resource/postgresql, batch]
+      exporters: [otlphttp/logfire]
+```
+
+`.env.example` adds, alongside the existing keys:
+
+```
+POSTGRESQL_USERNAME=logfire_monitor
+POSTGRESQL_PASSWORD=logfire_monitor
+LOGFIRE_INGEST_URL=https://logfire-us.pydantic.dev
+```
+
+These are local-only, non-secret demo credentials (repo-wide convention — no secrets
+manager); `LOGFIRE_INGEST_URL` defaults to Logfire's US region and reuses the app's own
+`LOGFIRE_TOKEN`, so Postgres metrics land in the same Logfire project as the app's traces.
+EU accounts or self-hosted Logfire need to override `LOGFIRE_INGEST_URL` in their own
+`.env`.
 
 ## Dependencies (`apps/rx-assistant/pyproject.toml`)
 
@@ -220,6 +322,6 @@ suite.
 - No re-ranking, hybrid search, or chunking strategy beyond one row = one embedded
   record — the dataset is small and short-text enough that this is unnecessary.
 - No automatic re-ingestion on `medicines.csv` changes; the developer reruns the script.
-- No promotion of vector-DB or local-embedding helpers into `demo_core` — this is the
-  first demo to need them; `AGENTS.md`'s rule is to copy the pattern once before
-  generalizing it.
+- No promotion of vector-DB, local-embedding, or Postgres-monitoring helpers into
+  `demo_core` — this is the first demo to need them; `AGENTS.md`'s rule is to copy the
+  pattern once before generalizing it.
