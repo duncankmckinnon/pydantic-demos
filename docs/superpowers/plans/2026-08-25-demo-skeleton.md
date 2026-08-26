@@ -90,8 +90,13 @@ Create `packages/demo_core/src/demo_core/__init__.py` with no content (an empty 
 
 - [ ] **Step 5: Sync the workspace**
 
-Run: `uv sync`
-Expected: completes successfully, creates `.venv/` and `uv.lock` at the repo root, installs `demo-core` in editable mode.
+This root `pyproject.toml` is a *virtual* workspace root (`package = false`, empty
+`dependencies`) — nothing depends on `demo-core`, so a bare `uv sync` only installs the
+`dev` dependency group and skips every workspace member. Use `--all-packages` to install
+every current and future workspace member regardless of whether anything references it:
+
+Run: `uv sync --all-packages`
+Expected: completes successfully, creates `.venv/` and `uv.lock` at the repo root, installs `demo-core` in editable mode. Do not "fix" this by adding `demo-core` to the root's own `dependencies` — that would require re-editing the root `pyproject.toml` every time a new workspace member (e.g. `apps/chat` in Task 7) is added, which defeats the point of a virtual root. `uv sync --all-packages` scales to new members with no root edit.
 
 - [ ] **Step 6: Verify the package imports**
 
@@ -739,8 +744,8 @@ def _configure_logfire_for_tests() -> None:
 
 - [ ] **Step 4: Sync the workspace to pick up the new member**
 
-Run: `uv sync`
-Expected: completes successfully, `chat` and `demo-core` both installed in editable mode.
+Run: `uv sync --all-packages`
+Expected: completes successfully, `chat` and `demo-core` both installed in editable mode. (Plain `uv sync` would skip both — see Task 1 Step 5's note on why this is a virtual workspace root.)
 
 - [ ] **Step 5: Write the failing test**
 
@@ -1397,7 +1402,8 @@ into `docker-compose.yml`.
 7. `docker-compose.yml` — add a service block for `<name>` (see `chat`'s entry), with its
    own `profiles: ["<name>", "all"]`. Chaining to another demo is not a special mechanism —
    just call that demo's Compose service name as an HTTP base URL.
-8. Run `uv sync` at the repo root to pick up the new workspace member, then
+8. Run `uv sync --all-packages` at the repo root to pick up the new workspace member (the
+   root is a virtual workspace, so plain `uv sync` skips members nothing depends on), then
    `uv run pytest apps/<name>/tests/` and `docker compose config` before committing.
 
 ## Common Mistakes
