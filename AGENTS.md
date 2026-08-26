@@ -20,10 +20,10 @@ secrets manager, or customer-facing auth in this repo — everything runs locall
 ## `demo_core` contract
 
 - `demo_core.settings.GatewaySettings(api_key: str)` — reads `PYDANTIC_AI_GATEWAY_API_KEY`.
-- `demo_core.settings.LogfireSettings(token: str, project: str | None)` — reads
-  `LOGFIRE_TOKEN` / `LOGFIRE_PROJECT`.
-- `demo_core.logfire_setup.configure_logfire(service_name, environment="local", send_to_logfire=True)`
-  — call once, before building any Agent or FastAPI app.
+- `demo_core.settings.LogfireSettings(token: str)` — reads `LOGFIRE_TOKEN`.
+- `demo_core.logfire_setup.configure_logfire(service_name, environment="local", send_to_logfire=True, token=None)`
+  — call once, before building any Agent or FastAPI app. `token=None` lets Logfire read
+  `LOGFIRE_TOKEN` from the ambient environment itself.
 - `demo_core.models.get_model(api_format, model_name, settings) -> Model` — the only place
   Gateway provider wiring lives. Add a new `api_format` by adding an entry to its
   `_MODEL_CLASSES` dict.
@@ -46,11 +46,13 @@ Every `apps/<name>/.env` (gitignored) sets its own:
 ```
 PYDANTIC_AI_GATEWAY_API_KEY=
 LOGFIRE_TOKEN=
-LOGFIRE_PROJECT=
 ```
 
 This gives each demo an independent Gateway project/token and an independent Logfire
-project/token. `docker-compose.yml` loads each service's `.env` via its own `env_file:`.
+project/token — the Logfire project is derived from the token itself, so there is no
+separate project setting. `docker-compose.yml` loads each service's `.env` via its own
+`env_file:`; when running outside Docker, the app loads its own `apps/<name>/.env` via
+`load_dotenv()` at import time.
 
 ## Docker & chaining
 

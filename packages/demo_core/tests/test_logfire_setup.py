@@ -13,7 +13,7 @@ def test_configure_logfire_calls_in_correct_order() -> None:
             "instrument_system_metrics",
         ]
         mock_logfire.configure.assert_called_once_with(
-            service_name="chat", environment="dev", send_to_logfire=False
+            service_name="chat", environment="dev", send_to_logfire=False, token=None
         )
 
 
@@ -21,5 +21,16 @@ def test_configure_logfire_defaults() -> None:
     with patch("demo_core.logfire_setup.logfire") as mock_logfire:
         configure_logfire("chat")
         mock_logfire.configure.assert_called_once_with(
-            service_name="chat", environment="local", send_to_logfire=True
+            service_name="chat", environment="local", send_to_logfire=True, token=None
+        )
+
+
+def test_configure_logfire_passes_explicit_token() -> None:
+    with patch("demo_core.logfire_setup.logfire") as mock_logfire:
+        configure_logfire("chat", send_to_logfire=False, token="pylf_v1_us_test-key")
+        mock_logfire.configure.assert_called_once_with(
+            service_name="chat",
+            environment="local",
+            send_to_logfire=False,
+            token="pylf_v1_us_test-key",
         )

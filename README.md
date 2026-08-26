@@ -15,7 +15,7 @@ and Logfire. See [AGENTS.md](AGENTS.md) for the repo structure and how to add a 
 
 ```bash
 cd apps/chat
-cp .env.example .env   # fill in PYDANTIC_AI_GATEWAY_API_KEY, LOGFIRE_TOKEN, LOGFIRE_PROJECT
+cp .env.example .env   # fill in PYDANTIC_AI_GATEWAY_API_KEY, LOGFIRE_TOKEN
 cd ../..
 uv run --package chat uvicorn chat.main:app --reload
 ```

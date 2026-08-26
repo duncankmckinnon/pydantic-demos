@@ -16,4 +16,3 @@ class LogfireSettings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", populate_by_name=True)
 
     token: str = Field(validation_alias="LOGFIRE_TOKEN")
-    project: str | None = Field(default=None, validation_alias="LOGFIRE_PROJECT")

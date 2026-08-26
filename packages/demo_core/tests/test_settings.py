@@ -20,16 +20,7 @@ def test_gateway_settings_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> N
         GatewaySettings(_env_file=None)
 
 
-def test_logfire_settings_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_logfire_settings_reads_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LOGFIRE_TOKEN", "test-token")
-    monkeypatch.setenv("LOGFIRE_PROJECT", "test-project")
-    settings = LogfireSettings()
-    assert settings.token == "test-token"
-    assert settings.project == "test-project"
-
-
-def test_logfire_settings_project_is_optional(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LOGFIRE_TOKEN", "test-token")
-    monkeypatch.delenv("LOGFIRE_PROJECT", raising=False)
-    settings = LogfireSettings(_env_file=None)
-    assert settings.project is None
+    assert LogfireSettings().token == "test-token"
+    assert LogfireSettings(token="explicit-token").token == "explicit-token"
