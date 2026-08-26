@@ -22,10 +22,12 @@ into `docker-compose.yml`.
 
 1. `apps/<name>/pyproject.toml` — copy `apps/chat/pyproject.toml`'s shape: depend on
    `demo-core` via `[tool.uv.sources] demo-core = { workspace = true }`, plus whatever the
-   demo needs (`pydantic-ai`, `fastapi`, `uvicorn[standard]`, `pydantic-ai-harness` if the
-   demo needs sandboxed tool orchestration or sub-agents).
-2. `apps/<name>/.env.example` — at minimum `PYDANTIC_AI_GATEWAY_API_KEY`, `LOGFIRE_TOKEN`,
-   `LOGFIRE_PROJECT`.
+   demo needs (`pydantic-ai`, `pydantic-evals` for the evals suite in item 4, `fastapi`,
+   `uvicorn[standard]`, `python-dotenv` if the app loads its own `.env`, `pydantic-ai-harness`
+   if the demo needs sandboxed tool orchestration or sub-agents). Declare everything the
+   demo imports directly, even if `demo-core` already pulls it in transitively.
+2. `apps/<name>/.env.example` — at minimum `PYDANTIC_AI_GATEWAY_API_KEY` and
+   `LOGFIRE_TOKEN`.
 3. `apps/<name>/src/<name>/` — the agent(s) and FastAPI app. Build the agent with
    **REQUIRED SUB-SKILL: ai:building-pydantic-ai-agents**. If the demo needs sandboxed code
    execution, a filesystem/shell, sub-agents, or planning, add
@@ -38,9 +40,11 @@ into `docker-compose.yml`.
 4. `apps/<name>/src/<name>/evals/` — a `pydantic_evals.Dataset` of `Case`s. Use
    `demo_core.evals.HarnessJudge(agent=..., rubric=...)` for LLM-judge-style scoring.
 5. `apps/<name>/tests/` — unit tests using `TestModel`/`FunctionModel` via
-   `agent.override(model=...)`; a `conftest.py` setting dummy env vars via
-   `os.environ.setdefault(...)` so settings objects can construct at import time without a
-   real `.env`.
+   `agent.override(model=...)`; a `conftest.py` force-setting dummy env vars at module
+   level (`os.environ[...] = ...`, not `setdefault`) so settings objects can construct at
+   import time without a real `.env` and a developer's real credentials can never leak into
+   a test run. Include `os.environ["LOGFIRE_SEND_TO_LOGFIRE"] = "false"` so the app module's
+   own import-time app construction stays offline.
 6. `apps/<name>/Dockerfile` — copy `apps/chat/Dockerfile`, swapping `chat` for `<name>`.
    Remember the build context is the **repo root**, not `apps/<name>`, because of the
    `demo-core` path dependency.
@@ -49,7 +53,11 @@ into `docker-compose.yml`.
    just call that demo's Compose service name as an HTTP base URL.
 8. Run `uv sync --all-packages` at the repo root to pick up the new workspace member (the
    root is a virtual workspace, so plain `uv sync` skips members nothing depends on), then
-   `uv run pytest apps/<name>/tests/` and `docker compose config` before committing.
+   `uv run pytest apps/<name>/tests/` and `docker compose --profile <name> config` before
+   committing. The `--profile` flag is required: services are behind Compose profiles, so a
+   bare `docker compose config` resolves to `services: {}` and validates nothing. That check
+   also needs `apps/<name>/.env` to exist (Compose errors out on a missing `env_file:`), so
+   `cp .env.example .env` first.
 
 ## Common Mistakes
 
