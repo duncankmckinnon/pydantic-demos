@@ -70,7 +70,7 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic-settings",
-    "logfire",
+    "logfire[fastapi]",
     "pydantic-ai",
     "pydantic-evals",
     "fastapi",
