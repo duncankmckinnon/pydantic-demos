@@ -349,19 +349,19 @@ from demo_core.settings import GatewaySettings
 
 
 def test_get_model_openai_returns_openai_chat_model() -> None:
-    settings = GatewaySettings(api_key="test-key")
+    settings = GatewaySettings(api_key="pylf_v1_us_test-key")
     model = get_model("openai", "gpt-5.2", settings)
     assert isinstance(model, OpenAIChatModel)
 
 
 def test_get_model_anthropic_returns_anthropic_model() -> None:
-    settings = GatewaySettings(api_key="test-key")
+    settings = GatewaySettings(api_key="pylf_v1_us_test-key")
     model = get_model("anthropic", "claude-sonnet-4-6", settings)
     assert isinstance(model, AnthropicModel)
 
 
 def test_get_model_rejects_unsupported_format() -> None:
-    settings = GatewaySettings(api_key="test-key")
+    settings = GatewaySettings(api_key="pylf_v1_us_test-key")
     with pytest.raises(ValueError, match="Unsupported api_format"):
         get_model("cohere", "command", settings)
 ```
@@ -733,7 +733,10 @@ import os
 import logfire
 import pytest
 
-os.environ.setdefault("PYDANTIC_AI_GATEWAY_API_KEY", "test-key")
+# gateway_provider() validates the key's shape via regex (pylf_v<n>_<region>_...) even
+# though no network call happens at construction time — an arbitrary string like
+# "test-key" raises a UserError before a test ever gets to run. See Task 4's report.
+os.environ.setdefault("PYDANTIC_AI_GATEWAY_API_KEY", "pylf_v1_us_test-key")
 os.environ.setdefault("LOGFIRE_TOKEN", "test-token")
 
 
@@ -766,7 +769,7 @@ def test_model_choices_is_non_empty_list_of_pairs() -> None:
 
 
 def test_build_agent_runs_with_overridden_model() -> None:
-    settings = GatewaySettings(api_key="test-key")
+    settings = GatewaySettings(api_key="pylf_v1_us_test-key")
     agent = build_agent(settings)
 
     with agent.override(model=TestModel()):
