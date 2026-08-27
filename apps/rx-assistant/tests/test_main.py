@@ -94,3 +94,29 @@ def test_chat_endpoint_rejects_unknown_model_choice(monkeypatch) -> None:
         "/api/chat", json={"message": "hi", "model_choice": "anthropic:not-a-real-model"}
     )
     assert response.status_code == 400
+
+
+def test_startup_and_shutdown_use_real_deps_when_none_provided(monkeypatch) -> None:
+    fake_pool = FakePool()
+    close_calls = []
+
+    async def fake_create_pool(database_url):
+        return fake_pool
+
+    def fake_load_embedding_model():
+        return FakeEmbeddingModel()
+
+    async def fake_close():
+        close_calls.append(True)
+
+    monkeypatch.setattr(fake_pool, "close", fake_close)
+    monkeypatch.setattr(rx_assistant.main, "create_pool", fake_create_pool)
+    monkeypatch.setattr(rx_assistant.main, "load_embedding_model", fake_load_embedding_model)
+
+    app = rx_assistant.main.create_rx_app(send_to_logfire=False)
+
+    with TestClient(app) as client:
+        response = client.get("/")
+        assert response.status_code == 200
+
+    assert close_calls == [True]
