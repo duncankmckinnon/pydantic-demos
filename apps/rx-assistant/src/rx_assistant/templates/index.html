@@ -1,0 +1,54 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Rx Assistant Demo</title>
+    <style>
+      body { font-family: sans-serif; max-width: 640px; margin: 2rem auto; }
+      #disclaimer { background: #fff3cd; border: 1px solid #ffe69c; padding: 0.75rem; margin-bottom: 1rem; font-size: 0.9rem; }
+      #transcript { border: 1px solid #ccc; padding: 1rem; min-height: 200px; margin-bottom: 1rem; white-space: pre-wrap; }
+      #message-form { display: flex; gap: 0.5rem; }
+      #message-input { flex: 1; }
+    </style>
+  </head>
+  <body>
+    <h1>Rx Assistant Demo</h1>
+    <div id="disclaimer">
+      This demo answers from a static, public dataset of medications and conditions.
+      It is not medical advice — consult a healthcare professional for real decisions.
+    </div>
+    <label for="model-select">Model</label>
+    <select id="model-select">
+      {% for api_format, model_name in model_choices %}
+      <option value="{{ api_format }}:{{ model_name }}">{{ api_format }}:{{ model_name }}</option>
+      {% endfor %}
+    </select>
+    <div id="transcript"></div>
+    <form id="message-form">
+      <input id="message-input" type="text" autocomplete="off" placeholder="Ask about a condition or medication..." />
+      <button type="submit">Send</button>
+    </form>
+    <script>
+      const form = document.getElementById("message-form");
+      const input = document.getElementById("message-input");
+      const transcript = document.getElementById("transcript");
+      const modelSelect = document.getElementById("model-select");
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const message = input.value;
+        if (!message) return;
+        transcript.textContent += `You: ${message}\n`;
+        input.value = "";
+
+        const response = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message, model_choice: modelSelect.value }),
+        });
+        const data = await response.json();
+        transcript.textContent += `Agent: ${data.reply}\n`;
+      });
+    </script>
+  </body>
+</html>
