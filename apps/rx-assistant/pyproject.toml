@@ -13,10 +13,20 @@ dependencies = [
     "asyncpg",
     "pgvector",
     "sentence-transformers",
+    # Direct (not just transitive via sentence-transformers) so the pytorch-cpu index
+    # override below actually applies: uv only honors tool.uv.sources for direct
+    # dependencies, not transitive ones.
+    "torch",
 ]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.uv.sources]
 demo-core = { workspace = true }
+torch = { index = "pytorch-cpu" }
 
 [build-system]
 requires = ["hatchling"]
