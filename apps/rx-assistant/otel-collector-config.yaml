@@ -1,0 +1,56 @@
+receivers:
+  postgresql:
+    endpoint: rx-assistant-db:5432
+    username: ${env:POSTGRESQL_USERNAME}
+    password: ${env:POSTGRESQL_PASSWORD}
+    databases: []  # empty = all non-template databases
+    collection_interval: 10s
+    tls:
+      insecure: true  # the pgvector/pgvector:pg16 image has no TLS cert configured
+    metrics:
+      postgresql.database.locks:
+        enabled: true
+      postgresql.deadlocks:
+        enabled: true
+      postgresql.sequential_scans:
+        enabled: true
+      postgresql.blks_hit:
+        enabled: true
+      postgresql.blks_read:
+        enabled: true
+      postgresql.temp_files:
+        enabled: true
+      postgresql.temp.io:
+        enabled: true
+      postgresql.wal.delay:
+        enabled: true
+      postgresql.bgwriter.maxwritten:
+        enabled: true
+      postgresql.bgwriter.buffers.allocated:
+        enabled: true
+      postgresql.index.size:
+        enabled: true
+processors:
+  resource/postgresql:
+    attributes:
+      - key: service.name
+        value: postgresql
+        action: upsert
+      - key: service.namespace
+        value: infrastructure
+        action: upsert
+      - key: service.instance.id
+        value: "rx-assistant-db-local"
+        action: upsert
+  batch: {}
+exporters:
+  otlphttp/logfire:
+    endpoint: ${env:LOGFIRE_INGEST_URL}
+    headers:
+      Authorization: Bearer ${env:LOGFIRE_TOKEN}
+service:
+  pipelines:
+    metrics/postgresql:
+      receivers: [postgresql]
+      processors: [resource/postgresql, batch]
+      exporters: [otlphttp/logfire]
