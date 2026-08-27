@@ -15,6 +15,14 @@ os.environ["LOGFIRE_SEND_TO_LOGFIRE"] = "false"
 os.environ["DATABASE_URL"] = "postgresql://test:test@localhost/test"
 
 import logfire  # noqa: E402
+import pydantic_evals.online  # noqa: E402
+
+# The rx-assistant agent has an online-eval capability (rx_assistant.evals.online.
+# RX_ASSISTANT_ONLINE_EVALUATION) whose judge evaluator makes a real Gateway call and opens
+# its own database connection. Disabled globally here — same reasoning as the Gateway/Logfire
+# env vars above — so no test triggers a real model call or db connection in the background
+# just by hitting /api/chat.
+pydantic_evals.online.configure(enabled=False)
 
 
 @pytest.fixture(autouse=True, scope="session")

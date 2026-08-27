@@ -1,4 +1,5 @@
-import numpy as np
+from types import SimpleNamespace
+
 import rx_assistant.main
 from fastapi.testclient import TestClient
 from pydantic_ai.models.test import TestModel
@@ -7,13 +8,10 @@ from rx_assistant.agent import Deps
 
 
 class FakePool:
-    def __init__(self, condition_rows=None, medication_rows=None):
-        self._condition_rows = condition_rows or []
+    def __init__(self, medication_rows=None):
         self._medication_rows = medication_rows or []
 
     async def fetch(self, query, *args):
-        if "FROM conditions" in query:
-            return self._condition_rows
         return self._medication_rows
 
     async def close(self) -> None:
@@ -21,8 +19,11 @@ class FakePool:
 
 
 class FakeEmbeddingModel:
-    def encode(self, texts, **kwargs):
-        return np.zeros((len(texts), 3))
+    async def embed_query(self, text):
+        return SimpleNamespace(embeddings=[[0.0, 0.0, 0.0]])
+
+    async def embed_documents(self, texts):
+        return SimpleNamespace(embeddings=[[0.0, 0.0, 0.0] for _ in texts])
 
 
 def _fake_deps() -> Deps:
@@ -44,8 +45,13 @@ def test_index_page_lists_model_choices() -> None:
 
 def test_chat_endpoint_returns_reply_and_sets_session_cookie(monkeypatch) -> None:
     app = rx_assistant.main.create_rx_app(send_to_logfire=False, deps=_fake_deps())
+    # Excludes the SubAgents-provided delegate_task tool: TestModel's default call_tools="all"
+    # would otherwise call it too, actually invoking the web-research sub-agent's real
+    # Gateway-routed model.
     monkeypatch.setattr(
-        rx_assistant.main, "get_model", lambda api_format, model_name, settings: TestModel()
+        rx_assistant.main,
+        "get_model",
+        lambda api_format, model_name, settings: TestModel(call_tools=["search_medications"]),
     )
     client = TestClient(app)
 
@@ -61,8 +67,13 @@ def test_chat_endpoint_returns_reply_and_sets_session_cookie(monkeypatch) -> Non
 
 def test_chat_endpoint_reuses_session_history(monkeypatch) -> None:
     app = rx_assistant.main.create_rx_app(send_to_logfire=False, deps=_fake_deps())
+    # Excludes the SubAgents-provided delegate_task tool: TestModel's default call_tools="all"
+    # would otherwise call it too, actually invoking the web-research sub-agent's real
+    # Gateway-routed model.
     monkeypatch.setattr(
-        rx_assistant.main, "get_model", lambda api_format, model_name, settings: TestModel()
+        rx_assistant.main,
+        "get_model",
+        lambda api_format, model_name, settings: TestModel(call_tools=["search_medications"]),
     )
     client = TestClient(app)
 
@@ -82,8 +93,13 @@ def test_chat_endpoint_reuses_session_history(monkeypatch) -> None:
 
 def test_chat_endpoint_rejects_unknown_model_choice(monkeypatch) -> None:
     app = rx_assistant.main.create_rx_app(send_to_logfire=False, deps=_fake_deps())
+    # Excludes the SubAgents-provided delegate_task tool: TestModel's default call_tools="all"
+    # would otherwise call it too, actually invoking the web-research sub-agent's real
+    # Gateway-routed model.
     monkeypatch.setattr(
-        rx_assistant.main, "get_model", lambda api_format, model_name, settings: TestModel()
+        rx_assistant.main,
+        "get_model",
+        lambda api_format, model_name, settings: TestModel(call_tools=["search_medications"]),
     )
     client = TestClient(app)
 

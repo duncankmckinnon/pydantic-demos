@@ -59,7 +59,7 @@ async def ingest(database_url: str, csv_path: Path = _DEFAULT_CSV_PATH) -> None:
             await conn.execute("TRUNCATE conditions, medications RESTART IDENTITY CASCADE;")
 
             condition_names = sorted({clean_condition_name(row["disease_name"]) for row in rows})
-            condition_embeddings = encode_texts(model, condition_names)
+            condition_embeddings = await encode_texts(model, condition_names)
             condition_id_by_name: dict[str, int] = {}
             for name, embedding in zip(condition_names, condition_embeddings):
                 condition_id = await conn.fetchval(
@@ -77,7 +77,7 @@ async def ingest(database_url: str, csv_path: Path = _DEFAULT_CSV_PATH) -> None:
                     )
                     for row in batch
                 ]
-                embeddings = encode_texts(model, texts)
+                embeddings = await encode_texts(model, texts)
                 await conn.executemany(
                     "INSERT INTO medications ("
                     "condition_id, med_name, med_url, generic_name, drug_content, "

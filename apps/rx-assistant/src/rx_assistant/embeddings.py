@@ -1,23 +1,29 @@
 from functools import lru_cache
 
-from sentence_transformers import SentenceTransformer
+from pydantic_ai import Embedder
+from pydantic_ai.embeddings.sentence_transformers import SentenceTransformerEmbeddingModel
 
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 
 
 @lru_cache(maxsize=1)
-def load_embedding_model() -> SentenceTransformer:
-    """Load the local embedding model once per process. Never called from a test — it
-    downloads real model weights on first use."""
-    return SentenceTransformer(EMBEDDING_MODEL_NAME)
+def load_embedding_model() -> Embedder:
+    """Build the embedder once per process. instrument=True makes embedding calls show up in
+    Logfire traces like every other model call in this repo; the underlying SentenceTransformer
+    weights are still downloaded/loaded lazily on first embed() call, not here."""
+    return Embedder(SentenceTransformerEmbeddingModel(EMBEDDING_MODEL_NAME), instrument=True)
 
 
-def encode_texts(model, texts: list[str]) -> list[list[float]]:
-    """Encode a batch of texts to embedding vectors, as plain lists of floats (asyncpg's
+async def encode_texts(embedder: Embedder, texts: list[str]) -> list[list[float]]:
+    """Encode a batch of documents to embedding vectors, as plain lists of floats (asyncpg's
     pgvector codec accepts a plain list; it doesn't need a numpy array)."""
-    vectors = model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
-    return [vector.tolist() for vector in vectors]
+    result = await embedder.embed_documents(texts)
+    return [list(vector) for vector in result.embeddings]
 
 
-def encode_text(model, text: str) -> list[float]:
-    return encode_texts(model, [text])[0]
+async def encode_text(embedder: Embedder, text: str) -> list[float]:
+    """Encode a single search query. Uses embed_query rather than embed_documents — a no-op
+    distinction for all-MiniLM-L6-v2, but correct if this ever moves to a model with
+    asymmetric query/document prompts."""
+    result = await embedder.embed_query(text)
+    return list(result.embeddings[0])

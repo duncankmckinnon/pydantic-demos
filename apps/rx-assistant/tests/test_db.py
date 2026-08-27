@@ -1,9 +1,7 @@
 from rx_assistant.db import (
-    ConditionMatch,
     MedicationMatch,
     build_medication_embedding_text,
     clean_condition_name,
-    query_conditions,
     query_medications,
 )
 
@@ -36,20 +34,10 @@ class FakePool:
         return self._rows
 
 
-async def test_query_conditions_returns_condition_matches() -> None:
-    pool = FakePool([{"name": "ADHD", "distance": 0.12}])
-
-    results = await query_conditions(pool, [0.1, 0.2, 0.3], limit=3)
-
-    assert results == [ConditionMatch(name="ADHD", distance=0.12)]
-    query, args = pool.calls[0]
-    assert "FROM conditions" in query
-    assert args == ([0.1, 0.2, 0.3], 3)
-
-
 async def test_query_medications_filters_by_condition_when_matches_found() -> None:
     row = {
         "med_name": "Atrest 25mg",
+        "med_url": "https://www.netmeds.com/prescriptions/atrest-25mg-tablet-10-s",
         "generic_name": "Tetrabenazine",
         "drug_content": "...",
         "drug_manufacturer": "Centaur",
@@ -71,6 +59,7 @@ async def test_query_medications_filters_by_condition_when_matches_found() -> No
 async def test_query_medications_falls_back_when_condition_filter_finds_nothing() -> None:
     row = {
         "med_name": "Atrest 25mg",
+        "med_url": "https://www.netmeds.com/prescriptions/atrest-25mg-tablet-10-s",
         "generic_name": "Tetrabenazine",
         "drug_content": "...",
         "drug_manufacturer": "Centaur",

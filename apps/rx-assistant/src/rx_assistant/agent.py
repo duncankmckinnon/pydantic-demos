@@ -1,11 +1,14 @@
+from collections.abc import Sequence
 from dataclasses import dataclass
 
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, AgentCapability, RunContext
+from pydantic_ai_harness.subagents import SubAgent, SubAgents
 
 from demo_core.models import get_model
 from demo_core.settings import GatewaySettings
-from rx_assistant.db import ConditionMatch, MedicationMatch, query_conditions, query_medications
+from rx_assistant.db import MedicationMatch, query_medications
 from rx_assistant.embeddings import encode_text
+from rx_assistant.web_research import build_web_research_agent
 
 # Update this list to whatever models are enabled on your Gateway project.
 MODEL_CHOICES: list[tuple[str, str]] = [
@@ -20,40 +23,56 @@ class Deps:
     embedding_model: object
 
 
-def build_agent(settings: GatewaySettings) -> Agent[Deps, str]:
+def build_agent(
+    settings: GatewaySettings, *, capabilities: Sequence[AgentCapability] = ()
+) -> Agent[Deps, str]:
     """Build the rx-assistant agent using the first entry in MODEL_CHOICES as its default
     model. Deps (a real asyncpg pool + loaded embedding model, or test doubles) must be
-    passed to every agent.run(...) call."""
+    passed to every agent.run(...) call. Additional `capabilities` (e.g. the online eval,
+    attached by rx_assistant.main) are appended as-is — kept as a parameter, rather than
+    imported here, so this module stays decoupled from rx_assistant.evals, which would
+    otherwise import back into this module."""
     api_format, model_name = MODEL_CHOICES[0]
+    web_research_agent = build_web_research_agent(settings, MODEL_CHOICES[0])
     agent = Agent(
         get_model(api_format, model_name, settings),
         name="rx_assistant_agent",
         deps_type=Deps,
+        capabilities=[
+            SubAgents(
+                agents=[
+                    SubAgent(
+                        web_research_agent,
+                        name="web_research",
+                        description=(
+                            "Fetch and summarize one known source when the database and "
+                            "your own knowledge aren't enough: for a medication, pass its "
+                            "name and med_url (from search_medications); for a condition, "
+                            "pass just its name. It reads only that one source; it cannot "
+                            "search the web more broadly."
+                        ),
+                    )
+                ]
+            ),
+            *capabilities,
+        ],
         instructions=(
-            "You are a medical information assistant over a demo medications and "
-            "conditions database. Use the search_conditions and search_medications "
-            "tools before answering any question about a condition or medication. Cite "
-            "the specific medication names, prices, and manufacturers you retrieved. "
-            "This is demo data scraped from a public retail site, not medical advice — "
-            "always tell the user to consult a healthcare professional for real decisions."
+            "You are a pharmacy prescription assistant. Patients will ask you questions "
+            "about their medications and conditions. Use your own judgment about when to "
+            "look something up. When you do reference a specific medication, cite its "
+            "name, generic name, and manufacturer. Tell the user to consult a healthcare "
+            "professional or pharmacist for real decisions if it seems like they are "
+            "treating this as medical advice."
         ),
     )
-
-    @agent.tool
-    async def search_conditions(
-        ctx: RunContext[Deps], query: str, limit: int = 5
-    ) -> list[ConditionMatch]:
-        """Find conditions/diseases in the database matching a natural-language query."""
-        embedding = encode_text(ctx.deps.embedding_model, query)
-        return await query_conditions(ctx.deps.pool, embedding, limit)
 
     @agent.tool
     async def search_medications(
         ctx: RunContext[Deps], query: str, condition: str | None = None, limit: int = 5
     ) -> list[MedicationMatch]:
         """Find medications matching a natural-language query, optionally scoped to a
-        condition name (e.g. one returned by search_conditions)."""
-        embedding = encode_text(ctx.deps.embedding_model, query)
+        condition name."""
+        embedding = await encode_text(ctx.deps.embedding_model, query)
         return await query_medications(ctx.deps.pool, embedding, condition, limit)
 
     return agent

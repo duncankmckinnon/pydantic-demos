@@ -92,6 +92,93 @@
         font-size: 0.95rem;
       }
 
+      /* Agent replies are rendered from markdown (see renderMarkdown), so real HTML block
+         elements handle spacing instead of the literal newlines white-space: pre-wrap
+         preserves for the plain-text user/error bubbles. */
+      .message.agent {
+        white-space: normal;
+      }
+
+      .message.agent > :first-child {
+        margin-top: 0;
+      }
+
+      .message.agent > :last-child {
+        margin-bottom: 0;
+      }
+
+      .message.agent p,
+      .message.agent ul,
+      .message.agent ol,
+      .message.agent blockquote,
+      .message.agent table {
+        margin: 0.5em 0;
+      }
+
+      .message.agent ul,
+      .message.agent ol {
+        padding-left: 1.4em;
+      }
+
+      .message.agent h1,
+      .message.agent h2,
+      .message.agent h3,
+      .message.agent h4,
+      .message.agent h5,
+      .message.agent h6 {
+        margin: 0.6em 0 0.3em;
+        line-height: 1.3;
+      }
+
+      .message.agent code {
+        background: rgba(0, 0, 0, 0.08);
+        padding: 0.1em 0.3em;
+        border-radius: 4px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.85em;
+      }
+
+      .message.agent pre {
+        background: rgba(0, 0, 0, 0.08);
+        padding: 0.6em 0.8em;
+        border-radius: 8px;
+        overflow-x: auto;
+      }
+
+      .message.agent pre code {
+        background: none;
+        padding: 0;
+      }
+
+      .message.agent blockquote {
+        padding-left: 0.8em;
+        border-left: 3px solid var(--border);
+        color: var(--muted);
+      }
+
+      .message.agent table {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 0.9em;
+      }
+
+      .message.agent th,
+      .message.agent td {
+        border: 1px solid var(--border);
+        padding: 0.3em 0.6em;
+        text-align: left;
+      }
+
+      .message.agent hr {
+        border: none;
+        border-top: 1px solid var(--border);
+        margin: 0.8em 0;
+      }
+
+      .message.agent a {
+        color: inherit;
+      }
+
       .message.user {
         align-self: flex-end;
         background: var(--user-bubble);
@@ -189,10 +276,150 @@
       const modelSelect = document.getElementById("model-select");
       const submitButton = form.querySelector("button[type=submit]");
 
+      // Minimal, dependency-free markdown -> HTML renderer for agent replies (headings,
+      // bold/italic/code, links, lists, blockquotes, tables, code fences, horizontal
+      // rules). Escapes the raw text first — the source is LLM output, so this must not
+      // let it inject arbitrary HTML.
+      function escapeHtml(str) {
+        return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      }
+
+      function renderInline(text) {
+        // Escaped here, per inline segment, rather than once over the whole raw string —
+        // block-level detection below (blockquote >, etc.) needs to see the real
+        // unescaped markdown characters first.
+        text = escapeHtml(text);
+        text = text.replace(/`([^`]+)`/g, (_, code) => `<code>${code}</code>`);
+        text = text.replace(
+          /\[([^\]]+)\]\(([^)]+)\)/g,
+          (_, label, url) => `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`
+        );
+        text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+        text = text.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, "<em>$1</em>");
+        text = text.replace(/(?<!_)_([^_]+)_(?!_)/g, "<em>$1</em>");
+        return text;
+      }
+
+      function renderMarkdown(raw) {
+        // Pull fenced code blocks out of the raw (unescaped) text first, so block-level
+        // detection below never sees their contents; the extracted code is escaped when
+        // re-inserted, further down.
+        const codeBlocks = [];
+        const withoutCode = raw.replace(/```[^\n]*\n([\s\S]*?)```/g, (_, code) => {
+          codeBlocks.push(code.replace(/\n$/, ""));
+          return ` CODEBLOCK${codeBlocks.length - 1} `;
+        });
+
+        const lines = withoutCode.split("\n");
+        const html = [];
+        let i = 0;
+        const isBlockBoundary = (line) =>
+          /^\s*$/.test(line) ||
+          /^(#{1,6})\s+/.test(line) ||
+          /^\s*[-*]\s+/.test(line) ||
+          /^\s*\d+\.\s+/.test(line) ||
+          /^\s*>\s?/.test(line) ||
+          /^(-{3,}|\*{3,})\s*$/.test(line) ||
+          /^ CODEBLOCK\d+ $/.test(line);
+
+        while (i < lines.length) {
+          const line = lines[i];
+
+          if (/^\s*$/.test(line)) {
+            i++;
+            continue;
+          }
+
+          const codeMatch = line.match(/^ CODEBLOCK(\d+) $/);
+          if (codeMatch) {
+            html.push(`<pre><code>${escapeHtml(codeBlocks[Number(codeMatch[1])])}</code></pre>`);
+            i++;
+            continue;
+          }
+
+          const heading = line.match(/^(#{1,6})\s+(.*)$/);
+          if (heading) {
+            const level = heading[1].length;
+            html.push(`<h${level}>${renderInline(heading[2])}</h${level}>`);
+            i++;
+            continue;
+          }
+
+          if (/^(-{3,}|\*{3,})\s*$/.test(line)) {
+            html.push("<hr>");
+            i++;
+            continue;
+          }
+
+          if (/^\s*>\s?/.test(line)) {
+            const quoteLines = [];
+            while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+              quoteLines.push(lines[i].replace(/^\s*>\s?/, ""));
+              i++;
+            }
+            html.push(`<blockquote>${renderInline(quoteLines.join(" "))}</blockquote>`);
+            continue;
+          }
+
+          if (/^\s*\|.*\|\s*$/.test(line) && lines[i + 1] && /^\s*\|?[\s:|-]+\|?\s*$/.test(lines[i + 1])) {
+            const parseRow = (row) =>
+              row.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim());
+            const headerCells = parseRow(line);
+            i += 2;
+            const bodyRows = [];
+            while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
+              bodyRows.push(parseRow(lines[i]));
+              i++;
+            }
+            const thead = `<thead><tr>${headerCells
+              .map((cell) => `<th>${renderInline(cell)}</th>`)
+              .join("")}</tr></thead>`;
+            const tbody = `<tbody>${bodyRows
+              .map((row) => `<tr>${row.map((cell) => `<td>${renderInline(cell)}</td>`).join("")}</tr>`)
+              .join("")}</tbody>`;
+            html.push(`<table>${thead}${tbody}</table>`);
+            continue;
+          }
+
+          if (/^\s*[-*]\s+/.test(line)) {
+            const items = [];
+            while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+              items.push(lines[i].replace(/^\s*[-*]\s+/, ""));
+              i++;
+            }
+            html.push(`<ul>${items.map((item) => `<li>${renderInline(item)}</li>`).join("")}</ul>`);
+            continue;
+          }
+
+          if (/^\s*\d+\.\s+/.test(line)) {
+            const items = [];
+            while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+              items.push(lines[i].replace(/^\s*\d+\.\s+/, ""));
+              i++;
+            }
+            html.push(`<ol>${items.map((item) => `<li>${renderInline(item)}</li>`).join("")}</ol>`);
+            continue;
+          }
+
+          const paragraphLines = [];
+          while (i < lines.length && !isBlockBoundary(lines[i])) {
+            paragraphLines.push(lines[i]);
+            i++;
+          }
+          html.push(`<p>${renderInline(paragraphLines.join(" "))}</p>`);
+        }
+
+        return html.join("\n");
+      }
+
       function addMessage(role, text, { pending = false } = {}) {
         const el = document.createElement("div");
         el.className = `message ${role}${pending ? " pending" : ""}`;
-        el.textContent = text;
+        if (role === "agent" && !pending) {
+          el.innerHTML = renderMarkdown(text);
+        } else {
+          el.textContent = text;
+        }
         transcript.appendChild(el);
         transcript.scrollTop = transcript.scrollHeight;
         return el;
@@ -229,7 +456,7 @@
 
         try {
           const data = await postChat(message, modelSelect.value);
-          pending.textContent = data.reply;
+          pending.innerHTML = renderMarkdown(data.reply);
           pending.classList.remove("pending");
         } catch (err) {
           pending.remove();

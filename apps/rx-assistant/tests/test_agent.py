@@ -1,4 +1,5 @@
-import numpy as np
+from types import SimpleNamespace
+
 from pydantic_ai.models.test import TestModel
 
 from demo_core.settings import GatewaySettings
@@ -6,19 +7,19 @@ from rx_assistant.agent import Deps, MODEL_CHOICES, build_agent
 
 
 class FakePool:
-    def __init__(self, condition_rows, medication_rows):
-        self._condition_rows = condition_rows
+    def __init__(self, medication_rows):
         self._medication_rows = medication_rows
 
     async def fetch(self, query, *args):
-        if "FROM conditions" in query:
-            return self._condition_rows
         return self._medication_rows
 
 
 class FakeEmbeddingModel:
-    def encode(self, texts, **kwargs):
-        return np.zeros((len(texts), 3))
+    async def embed_query(self, text):
+        return SimpleNamespace(embeddings=[[0.0, 0.0, 0.0]])
+
+    async def embed_documents(self, texts):
+        return SimpleNamespace(embeddings=[[0.0, 0.0, 0.0] for _ in texts])
 
 
 def test_model_choices_is_non_empty_list_of_pairs() -> None:
@@ -33,10 +34,10 @@ def test_build_agent_runs_tools_with_test_model() -> None:
     agent = build_agent(settings)
     deps = Deps(
         pool=FakePool(
-            condition_rows=[{"name": "ADHD", "distance": 0.1}],
             medication_rows=[
                 {
                     "med_name": "Atrest 25mg",
+                    "med_url": "https://www.netmeds.com/prescriptions/atrest-25mg-tablet-10-s",
                     "generic_name": "Tetrabenazine",
                     "drug_content": "...",
                     "drug_manufacturer": "Centaur",
@@ -50,7 +51,10 @@ def test_build_agent_runs_tools_with_test_model() -> None:
         embedding_model=FakeEmbeddingModel(),
     )
 
-    with agent.override(model=TestModel()):
+    # Excludes the SubAgents-provided delegate_task tool: TestModel's default call_tools="all"
+    # would otherwise call it too, actually invoking the web-research sub-agent's real
+    # Gateway-routed model.
+    with agent.override(model=TestModel(call_tools=["search_medications"])):
         result = agent.run_sync("What treats ADHD?", deps=deps)
 
     assert isinstance(result.output, str)

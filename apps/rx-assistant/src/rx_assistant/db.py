@@ -58,14 +58,9 @@ def build_medication_embedding_text(
 
 
 @dataclass
-class ConditionMatch:
-    name: str
-    distance: float
-
-
-@dataclass
 class MedicationMatch:
     med_name: str
+    med_url: str | None
     generic_name: str | None
     drug_content: str | None
     drug_manufacturer: str | None
@@ -101,13 +96,8 @@ async def create_pool(database_url: str) -> asyncpg.Pool:
     return await asyncpg.create_pool(database_url, init=register_vector)
 
 
-_CONDITIONS_SQL = (
-    "SELECT name, embedding <=> $1 AS distance "
-    "FROM conditions ORDER BY embedding <=> $1 LIMIT $2"
-)
-
 _MEDICATIONS_SQL = (
-    "SELECT m.med_name, m.generic_name, m.drug_content, m.drug_manufacturer, "
+    "SELECT m.med_name, m.med_url, m.generic_name, m.drug_content, m.drug_manufacturer, "
     "m.price, m.prescription_required, c.name AS condition_name, "
     "m.embedding <=> $1 AS distance "
     "FROM medications m JOIN conditions c ON c.id = m.condition_id "
@@ -115,15 +105,24 @@ _MEDICATIONS_SQL = (
 
 _MEDICATIONS_UNFILTERED_SQL = _MEDICATIONS_SQL + "ORDER BY m.embedding <=> $1 LIMIT $2"
 
+# MATERIALIZED forces Postgres to evaluate the condition filter (a plain join/seq-scan over
+# a small subset) before sorting by distance. Without it, the planner pushes the LIMIT into
+# the medications_embedding_idx HNSW scan, which walks the index in global nearest-neighbor
+# order across ALL medications and applies the condition filter only after — so if none of
+# the closest LIMIT candidates happen to match the condition, the join returns zero rows even
+# though matching medications exist further down the ranking. Confirmed via EXPLAIN: without
+# MATERIALIZED the planner flattens this right back into that same bad plan.
 _MEDICATIONS_FILTERED_SQL = (
-    _MEDICATIONS_SQL + "WHERE c.name ILIKE '%' || $3 || '%' "
-    "ORDER BY m.embedding <=> $1 LIMIT $2"
+    "WITH filtered AS MATERIALIZED ("
+    "  SELECT m.med_name, m.med_url, m.generic_name, m.drug_content, m.drug_manufacturer, "
+    "  m.price, m.prescription_required, c.name AS condition_name, m.embedding "
+    "  FROM medications m JOIN conditions c ON c.id = m.condition_id "
+    "  WHERE c.name ILIKE '%' || $3 || '%'"
+    ") "
+    "SELECT med_name, med_url, generic_name, drug_content, drug_manufacturer, price, "
+    "prescription_required, condition_name, embedding <=> $1 AS distance "
+    "FROM filtered ORDER BY embedding <=> $1 LIMIT $2"
 )
-
-
-async def query_conditions(pool, embedding: list[float], limit: int = 5) -> list[ConditionMatch]:
-    rows = await pool.fetch(_CONDITIONS_SQL, embedding, limit)
-    return [ConditionMatch(name=row["name"], distance=row["distance"]) for row in rows]
 
 
 async def query_medications(
@@ -145,6 +144,7 @@ async def query_medications(
 def _row_to_medication_match(row) -> MedicationMatch:
     return MedicationMatch(
         med_name=row["med_name"],
+        med_url=row["med_url"],
         generic_name=row["generic_name"],
         drug_content=row["drug_content"],
         drug_manufacturer=row["drug_manufacturer"],

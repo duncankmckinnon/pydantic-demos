@@ -16,6 +16,7 @@ from demo_core.web import create_app
 from rx_assistant.agent import Deps, MODEL_CHOICES, build_agent
 from rx_assistant.db import create_pool
 from rx_assistant.embeddings import load_embedding_model
+from rx_assistant.evals.online import RX_ASSISTANT_ONLINE_EVALUATION
 from rx_assistant.settings import DatabaseSettings
 
 _TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -60,7 +61,7 @@ def create_rx_app(send_to_logfire: bool | None = None, deps: Deps | None = None)
     app = create_app(title="Rx Assistant Demo")
 
     gateway_settings = GatewaySettings()
-    agent = build_agent(gateway_settings)
+    agent = build_agent(gateway_settings, capabilities=[RX_ASSISTANT_ONLINE_EVALUATION])
 
     # Holds the real (or test-double) Deps once available. A dict, not a bare variable,
     # so the on_event closures below can mutate it.

@@ -13,6 +13,8 @@ dependencies = [
     "asyncpg",
     "pgvector",
     "sentence-transformers",
+    "pydantic-ai-harness>=0.25.0",
+    "httpx",
     # Direct (not just transitive via sentence-transformers) so the pytorch-cpu index
     # override below actually applies: uv only honors tool.uv.sources for direct
     # dependencies, not transitive ones.
