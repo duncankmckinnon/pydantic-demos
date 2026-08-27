@@ -5,3 +5,4 @@
 .env
 apps/*/.env
 docs/
+medicines.csv
