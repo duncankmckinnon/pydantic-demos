@@ -36,13 +36,16 @@ def test_build_agent_runs_tools_with_test_model() -> None:
         pool=FakePool(
             medication_rows=[
                 {
-                    "med_name": "Atrest 25mg",
-                    "med_url": "https://www.netmeds.com/prescriptions/atrest-25mg-tablet-10-s",
-                    "generic_name": "Tetrabenazine",
-                    "drug_content": "...",
-                    "drug_manufacturer": "Centaur",
-                    "price": "335.68",
-                    "prescription_required": "Rx required",
+                    "med_name": "Vyvanse",
+                    "med_url": "https://www.drugs.com/vyvanse.html",
+                    "generic_name": "lisdexamfetamine",
+                    "brand_names": "Vyvanse",
+                    "drug_classes": "CNS stimulants",
+                    "side_effects": "insomnia, dry mouth",
+                    "rx_otc": "Rx",
+                    "pregnancy_category": "C",
+                    "csa": "2",
+                    "alcohol": "X",
                     "condition_name": "ADHD",
                     "distance": 0.05,
                 }

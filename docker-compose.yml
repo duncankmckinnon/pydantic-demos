@@ -44,7 +44,7 @@ services:
     environment:
       DATABASE_URL: postgresql://rx_assistant:rx_assistant@rx-assistant-db:5432/rx_assistant
     volumes:
-      - ./apps/rx-assistant/db-init/medicines.csv.gz:/app/apps/rx-assistant/db-init/medicines.csv.gz:ro
+      - ./apps/rx-assistant/db-init/drugs.csv.gz:/app/apps/rx-assistant/db-init/drugs.csv.gz:ro
     depends_on:
       rx-assistant-db:
         condition: service_healthy

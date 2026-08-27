@@ -1,27 +1,16 @@
-from rx_assistant.db import (
-    MedicationMatch,
-    build_medication_embedding_text,
-    clean_condition_name,
-    query_medications,
-)
-
-
-def test_clean_condition_name_strips_trailing_count() -> None:
-    assert clean_condition_name("ADHD (7)") == "ADHD"
-    assert clean_condition_name("Diabetes Type 2 (123)") == "Diabetes Type 2"
-    assert clean_condition_name("No Count Here") == "No Count Here"
+from rx_assistant.db import MedicationMatch, build_medication_embedding_text, query_medications
 
 
 def test_build_medication_embedding_text_joins_nonempty_fields() -> None:
     text = build_medication_embedding_text(
-        "Atrest 25mg", "Tetrabenazine", "Used for Huntington's chorea"
+        "Vyvanse", "lisdexamfetamine", "CNS stimulants", "insomnia, dry mouth"
     )
-    assert text == "Atrest 25mg Tetrabenazine Used for Huntington's chorea"
+    assert text == "Vyvanse lisdexamfetamine CNS stimulants insomnia, dry mouth"
 
 
 def test_build_medication_embedding_text_skips_empty_fields() -> None:
-    text = build_medication_embedding_text("Atrest 25mg", "", None)
-    assert text == "Atrest 25mg"
+    text = build_medication_embedding_text("Vyvanse", "", None, "")
+    assert text == "Vyvanse"
 
 
 class FakePool:
@@ -34,18 +23,25 @@ class FakePool:
         return self._rows
 
 
-async def test_query_medications_filters_by_condition_when_matches_found() -> None:
-    row = {
-        "med_name": "Atrest 25mg",
-        "med_url": "https://www.netmeds.com/prescriptions/atrest-25mg-tablet-10-s",
-        "generic_name": "Tetrabenazine",
-        "drug_content": "...",
-        "drug_manufacturer": "Centaur",
-        "price": "335.68",
-        "prescription_required": "Rx required",
+def _sample_row() -> dict:
+    return {
+        "med_name": "Vyvanse",
+        "med_url": "https://www.drugs.com/vyvanse.html",
+        "generic_name": "lisdexamfetamine",
+        "brand_names": "Vyvanse",
+        "drug_classes": "CNS stimulants",
+        "side_effects": "insomnia, dry mouth",
+        "rx_otc": "Rx",
+        "pregnancy_category": "C",
+        "csa": "2",
+        "alcohol": "X",
         "condition_name": "ADHD",
         "distance": 0.05,
     }
+
+
+async def test_query_medications_filters_by_condition_when_matches_found() -> None:
+    row = _sample_row()
     pool = FakePool([row])
 
     results = await query_medications(pool, [0.1, 0.2, 0.3], condition="ADHD", limit=5)
@@ -57,17 +53,7 @@ async def test_query_medications_filters_by_condition_when_matches_found() -> No
 
 
 async def test_query_medications_falls_back_when_condition_filter_finds_nothing() -> None:
-    row = {
-        "med_name": "Atrest 25mg",
-        "med_url": "https://www.netmeds.com/prescriptions/atrest-25mg-tablet-10-s",
-        "generic_name": "Tetrabenazine",
-        "drug_content": "...",
-        "drug_manufacturer": "Centaur",
-        "price": "335.68",
-        "prescription_required": "Rx required",
-        "condition_name": "ADHD",
-        "distance": 0.05,
-    }
+    row = _sample_row()
 
     class FallbackPool(FakePool):
         async def fetch(self, query, *args):

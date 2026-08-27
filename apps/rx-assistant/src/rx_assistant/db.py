@@ -1,4 +1,3 @@
-import re
 from dataclasses import dataclass
 
 import asyncpg
@@ -25,13 +24,13 @@ CREATE TABLE IF NOT EXISTS medications (
     med_name TEXT NOT NULL,
     med_url TEXT,
     generic_name TEXT,
-    drug_content TEXT,
-    drug_variant TEXT,
-    drug_manufacturer TEXT,
-    drug_manufacturer_origin TEXT,
-    price TEXT,
-    final_price TEXT,
-    prescription_required TEXT,
+    brand_names TEXT,
+    drug_classes TEXT,
+    side_effects TEXT,
+    rx_otc TEXT,
+    pregnancy_category TEXT,
+    csa TEXT,
+    alcohol TEXT,
     embedding vector(384) NOT NULL
 );
 """
@@ -41,19 +40,12 @@ CREATE_MEDICATIONS_INDEX_SQL = (
     "ON medications USING hnsw (embedding vector_cosine_ops);"
 )
 
-_DISEASE_COUNT_SUFFIX_RE = re.compile(r"\s*\(\d+\)\s*$")
-
-
-def clean_condition_name(disease_name: str) -> str:
-    """Strip the trailing scrape-artifact count, e.g. "ADHD (7)" -> "ADHD"."""
-    return _DISEASE_COUNT_SUFFIX_RE.sub("", disease_name).strip()
-
 
 def build_medication_embedding_text(
-    med_name: str, generic_name: str | None, drug_content: str | None
+    med_name: str, generic_name: str | None, drug_classes: str | None, side_effects: str | None
 ) -> str:
     """Combine the fields worth matching a symptom/condition/drug-name query against."""
-    parts = [med_name, generic_name, drug_content]
+    parts = [med_name, generic_name, drug_classes, side_effects]
     return " ".join(part.strip() for part in parts if part and part.strip())
 
 
@@ -62,10 +54,13 @@ class MedicationMatch:
     med_name: str
     med_url: str | None
     generic_name: str | None
-    drug_content: str | None
-    drug_manufacturer: str | None
-    price: str | None
-    prescription_required: str | None
+    brand_names: str | None
+    drug_classes: str | None
+    side_effects: str | None
+    rx_otc: str | None
+    pregnancy_category: str | None
+    csa: str | None
+    alcohol: str | None
     condition_name: str
     distance: float
 
@@ -97,9 +92,9 @@ async def create_pool(database_url: str) -> asyncpg.Pool:
 
 
 _MEDICATIONS_SQL = (
-    "SELECT m.med_name, m.med_url, m.generic_name, m.drug_content, m.drug_manufacturer, "
-    "m.price, m.prescription_required, c.name AS condition_name, "
-    "m.embedding <=> $1 AS distance "
+    "SELECT m.med_name, m.med_url, m.generic_name, m.brand_names, m.drug_classes, "
+    "m.side_effects, m.rx_otc, m.pregnancy_category, m.csa, m.alcohol, "
+    "c.name AS condition_name, m.embedding <=> $1 AS distance "
     "FROM medications m JOIN conditions c ON c.id = m.condition_id "
 )
 
@@ -114,13 +109,14 @@ _MEDICATIONS_UNFILTERED_SQL = _MEDICATIONS_SQL + "ORDER BY m.embedding <=> $1 LI
 # MATERIALIZED the planner flattens this right back into that same bad plan.
 _MEDICATIONS_FILTERED_SQL = (
     "WITH filtered AS MATERIALIZED ("
-    "  SELECT m.med_name, m.med_url, m.generic_name, m.drug_content, m.drug_manufacturer, "
-    "  m.price, m.prescription_required, c.name AS condition_name, m.embedding "
+    "  SELECT m.med_name, m.med_url, m.generic_name, m.brand_names, m.drug_classes, "
+    "  m.side_effects, m.rx_otc, m.pregnancy_category, m.csa, m.alcohol, "
+    "  c.name AS condition_name, m.embedding "
     "  FROM medications m JOIN conditions c ON c.id = m.condition_id "
     "  WHERE c.name ILIKE '%' || $3 || '%'"
     ") "
-    "SELECT med_name, med_url, generic_name, drug_content, drug_manufacturer, price, "
-    "prescription_required, condition_name, embedding <=> $1 AS distance "
+    "SELECT med_name, med_url, generic_name, brand_names, drug_classes, side_effects, "
+    "rx_otc, pregnancy_category, csa, alcohol, condition_name, embedding <=> $1 AS distance "
     "FROM filtered ORDER BY embedding <=> $1 LIMIT $2"
 )
 
@@ -146,10 +142,13 @@ def _row_to_medication_match(row) -> MedicationMatch:
         med_name=row["med_name"],
         med_url=row["med_url"],
         generic_name=row["generic_name"],
-        drug_content=row["drug_content"],
-        drug_manufacturer=row["drug_manufacturer"],
-        price=row["price"],
-        prescription_required=row["prescription_required"],
+        brand_names=row["brand_names"],
+        drug_classes=row["drug_classes"],
+        side_effects=row["side_effects"],
+        rx_otc=row["rx_otc"],
+        pregnancy_category=row["pregnancy_category"],
+        csa=row["csa"],
+        alcohol=row["alcohol"],
         condition_name=row["condition_name"],
         distance=row["distance"],
     )

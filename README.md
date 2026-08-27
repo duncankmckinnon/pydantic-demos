@@ -27,13 +27,13 @@ cd apps/rx-assistant
 cp .env.example .env   # fill in PYDANTIC_AI_GATEWAY_API_KEY, LOGFIRE_TOKEN
 cd ../..
 docker compose --profile rx-assistant up -d rx-assistant-db
-uv run --package rx-assistant python -m rx_assistant.ingest   # one-time: embeds db-init/medicines.csv.gz
+uv run --package rx-assistant python -m rx_assistant.ingest   # one-time: embeds db-init/drugs.csv.gz
 uv run --package rx-assistant uvicorn rx_assistant.main:app --reload
 ```
 
-Open http://localhost:8000. The dataset (`apps/rx-assistant/db-init/medicines.csv.gz` —
-23,939 medications across 141 conditions scraped from netmeds.com) is committed to the repo
-gzipped, so no separate download step is needed. Ingestion creates the `vector` extension,
+Open http://localhost:8000. The dataset (`apps/rx-assistant/db-init/drugs.csv.gz` — 2,966
+medications across 49 conditions, scraped from drugs.com) is committed to the repo gzipped,
+so no separate download step is needed. Ingestion creates the `vector` extension,
 tables, and embeddings the first time it runs; it's not run automatically on app startup, so
 rerun it by hand whenever the CSV changes — it's idempotent, truncating and repopulating both
 tables each time.
