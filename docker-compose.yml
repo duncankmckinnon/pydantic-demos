@@ -16,3 +16,51 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     env_file: apps/chat/.env
     profiles: ["chat", "all"]
+
+  rx-assistant-db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: rx_assistant
+      POSTGRES_PASSWORD: rx_assistant
+      POSTGRES_DB: rx_assistant
+    env_file: apps/rx-assistant/.env
+    volumes:
+      - rx_assistant_db_data:/var/lib/postgresql/data
+      - ./apps/rx-assistant/db-init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rx_assistant"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    profiles: ["rx-assistant", "all"]
+
+  rx-assistant:
+    build:
+      context: .
+      dockerfile: apps/rx-assistant/Dockerfile
+    env_file: apps/rx-assistant/.env
+    environment:
+      DATABASE_URL: postgresql://rx_assistant:rx_assistant@rx-assistant-db:5432/rx_assistant
+    volumes:
+      - ./medicines.csv:/app/medicines.csv:ro
+    depends_on:
+      rx-assistant-db:
+        condition: service_healthy
+    ports:
+      - "8002:8000"
+    profiles: ["rx-assistant", "all"]
+
+  rx-assistant-otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.116.1
+    volumes:
+      - ./apps/rx-assistant/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    env_file: apps/rx-assistant/.env
+    depends_on:
+      rx-assistant-db:
+        condition: service_healthy
+    profiles: ["rx-assistant", "all"]
+
+volumes:
+  rx_assistant_db_data:
