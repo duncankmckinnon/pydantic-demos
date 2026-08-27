@@ -1,6 +1,8 @@
 import re
 from dataclasses import dataclass
 
+import asyncpg
+
 CREATE_EXTENSION_SQL = "CREATE EXTENSION IF NOT EXISTS vector;"
 
 CREATE_CONDITIONS_TABLE_SQL = """
@@ -71,3 +73,65 @@ class MedicationMatch:
     prescription_required: str | None
     condition_name: str
     distance: float
+
+
+async def create_pool(database_url: str) -> asyncpg.Pool:
+    """Open an asyncpg pool with the pgvector codec registered on every connection, so
+    Python lists round-trip as Postgres `vector` values."""
+    from pgvector.asyncpg import register_vector
+
+    return await asyncpg.create_pool(database_url, init=register_vector)
+
+
+_CONDITIONS_SQL = (
+    "SELECT name, embedding <=> $1 AS distance "
+    "FROM conditions ORDER BY embedding <=> $1 LIMIT $2"
+)
+
+_MEDICATIONS_SQL = (
+    "SELECT m.med_name, m.generic_name, m.drug_content, m.drug_manufacturer, "
+    "m.price, m.prescription_required, c.name AS condition_name, "
+    "m.embedding <=> $1 AS distance "
+    "FROM medications m JOIN conditions c ON c.id = m.condition_id "
+)
+
+_MEDICATIONS_UNFILTERED_SQL = _MEDICATIONS_SQL + "ORDER BY m.embedding <=> $1 LIMIT $2"
+
+_MEDICATIONS_FILTERED_SQL = (
+    _MEDICATIONS_SQL + "WHERE c.name ILIKE '%' || $3 || '%' "
+    "ORDER BY m.embedding <=> $1 LIMIT $2"
+)
+
+
+async def query_conditions(pool, embedding: list[float], limit: int = 5) -> list[ConditionMatch]:
+    rows = await pool.fetch(_CONDITIONS_SQL, embedding, limit)
+    return [ConditionMatch(name=row["name"], distance=row["distance"]) for row in rows]
+
+
+async def query_medications(
+    pool, embedding: list[float], condition: str | None = None, limit: int = 5
+) -> list[MedicationMatch]:
+    """Cosine-similarity search over medications. If `condition` is given, first tries a
+    substring match against the condition name; if that filter matches nothing (e.g. the
+    agent guessed a phrasing that doesn't hit any stored condition), falls back to an
+    unfiltered search rather than returning an empty result."""
+    if condition:
+        rows = await pool.fetch(_MEDICATIONS_FILTERED_SQL, embedding, limit, condition)
+        if rows:
+            return [_row_to_medication_match(row) for row in rows]
+
+    rows = await pool.fetch(_MEDICATIONS_UNFILTERED_SQL, embedding, limit)
+    return [_row_to_medication_match(row) for row in rows]
+
+
+def _row_to_medication_match(row) -> MedicationMatch:
+    return MedicationMatch(
+        med_name=row["med_name"],
+        generic_name=row["generic_name"],
+        drug_content=row["drug_content"],
+        drug_manufacturer=row["drug_manufacturer"],
+        price=row["price"],
+        prescription_required=row["prescription_required"],
+        condition_name=row["condition_name"],
+        distance=row["distance"],
+    )
