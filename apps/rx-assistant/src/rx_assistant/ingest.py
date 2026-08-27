@@ -12,30 +12,35 @@ update just needs a rerun.
 
 import asyncio
 import csv
+import gzip
 from pathlib import Path
 
 from rx_assistant.db import (
     CREATE_CONDITIONS_INDEX_SQL,
     CREATE_CONDITIONS_TABLE_SQL,
-    CREATE_EXTENSION_SQL,
     CREATE_MEDICATIONS_INDEX_SQL,
     CREATE_MEDICATIONS_TABLE_SQL,
     build_medication_embedding_text,
     clean_condition_name,
     create_pool,
+    ensure_vector_extension,
 )
 from rx_assistant.embeddings import encode_texts, load_embedding_model
 from rx_assistant.settings import DatabaseSettings
 
-# apps/rx-assistant/src/rx_assistant/ingest.py -> parents[4] is the repo root, same depth
-# chat/__init__.py resolves its own .env from (parents[2] there is apps/chat; here we go
-# two levels further up past src/rx_assistant/rx-assistant to the repo root).
-_DEFAULT_CSV_PATH = Path(__file__).resolve().parents[4] / "medicines.csv"
+# apps/rx-assistant/src/rx_assistant/ingest.py -> parents[2] is apps/rx-assistant; the CSV
+# lives in its db-init/ dir (also bind-mounted whole into the Postgres init container,
+# which ignores the .csv.gz since it only executes .sh/.sql files there). Committed gzipped
+# (240MB raw vs. ~30MB compressed) since it's mostly repetitive drug-description text.
+_DEFAULT_CSV_PATH = Path(__file__).resolve().parents[2] / "db-init" / "medicines.csv.gz"
 _BATCH_SIZE = 256
 
 
 async def _load_rows(csv_path: Path) -> list[dict[str, str]]:
-    with csv_path.open(newline="", encoding="utf-8") as f:
+    """Reads a gzipped CSV when csv_path ends in .gz, plain text otherwise (the latter
+    keeps tests working with an uncompressed fixture)."""
+    opener = gzip.open if csv_path.suffix == ".gz" else open
+    with opener(csv_path, mode="rt", newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f))
 
 
@@ -43,10 +48,10 @@ async def ingest(database_url: str, csv_path: Path = _DEFAULT_CSV_PATH) -> None:
     rows = await _load_rows(csv_path)
     model = load_embedding_model()
 
+    await ensure_vector_extension(database_url)
     pool = await create_pool(database_url)
     try:
         async with pool.acquire() as conn:
-            await conn.execute(CREATE_EXTENSION_SQL)
             await conn.execute(CREATE_CONDITIONS_TABLE_SQL)
             await conn.execute(CREATE_CONDITIONS_INDEX_SQL)
             await conn.execute(CREATE_MEDICATIONS_TABLE_SQL)

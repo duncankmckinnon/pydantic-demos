@@ -26,7 +26,7 @@ class ReplyNotEmpty(Evaluator[Any, Any]):
 CHAT_ONLINE_EVALUATION = OnlineEvaluation(
     evaluators=[
         ReplyNotEmpty(),
-        # OnlineEvaluator(evaluator=chat_quality_judge, sample_rate=0.2),
+        OnlineEvaluator(evaluator=chat_quality_judge, sample_rate=0.2),
         OnlineEvaluator(evaluator=chat_efficiency_judge, sample_rate=0.2),
         OnlineEvaluator(evaluator=chat_tool_use_judge, sample_rate=0.2),
     ]

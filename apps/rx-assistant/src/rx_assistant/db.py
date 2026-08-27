@@ -75,9 +75,27 @@ class MedicationMatch:
     distance: float
 
 
+async def ensure_vector_extension(database_url: str) -> None:
+    """Create the pgvector extension over a plain connection, before any pool that
+    registers the vector codec touches the database.
+
+    create_pool's `init=register_vector` callback introspects Postgres's `vector` type as
+    soon as a connection is established (including the pool's first, eager connection at
+    creation time) — on a fresh database where the extension doesn't exist yet, that
+    introspection fails before any application code gets a chance to create it.
+    """
+    conn = await asyncpg.connect(database_url)
+    try:
+        await conn.execute(CREATE_EXTENSION_SQL)
+    finally:
+        await conn.close()
+
+
 async def create_pool(database_url: str) -> asyncpg.Pool:
     """Open an asyncpg pool with the pgvector codec registered on every connection, so
-    Python lists round-trip as Postgres `vector` values."""
+    Python lists round-trip as Postgres `vector` values. Requires the `vector` extension to
+    already exist (see ensure_vector_extension) since register_vector introspects it at
+    connect time, including the pool's own eager first connection."""
     from pgvector.asyncpg import register_vector
 
     return await asyncpg.create_pool(database_url, init=register_vector)

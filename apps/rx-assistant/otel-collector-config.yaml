@@ -20,8 +20,6 @@ receivers:
         enabled: true
       postgresql.temp_files:
         enabled: true
-      postgresql.temp.io:
-        enabled: true
       postgresql.wal.delay:
         enabled: true
       postgresql.bgwriter.maxwritten:
