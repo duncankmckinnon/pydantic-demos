@@ -19,3 +19,14 @@ cp .env.example .env   # fill in PYDANTIC_AI_GATEWAY_API_KEY, LOGFIRE_TOKEN
 cd ../..
 uv run --package chat uvicorn chat.main:app --reload
 ```
+
+## Quick start (rx-assistant demo)
+
+```bash
+cd apps/rx-assistant
+cp .env.example .env   # fill in PYDANTIC_AI_GATEWAY_API_KEY, LOGFIRE_TOKEN
+cd ../..
+docker compose --profile rx-assistant up -d rx-assistant-db
+uv run --package rx-assistant python -m rx_assistant.ingest   # one-time: embeds medicines.csv
+uv run --package rx-assistant uvicorn rx_assistant.main:app --reload
+```
