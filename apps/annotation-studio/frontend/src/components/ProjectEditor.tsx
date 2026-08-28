@@ -68,32 +68,76 @@ export function ProjectEditor({ initialCriteriaText, initialAgentName, initialLa
   };
 
   return (
-    <section className="project-editor">
-      <label htmlFor="agent-name">Source agent name (Logfire span name suffix)</label>
-      <input id="agent-name" value={agentName} onChange={(e) => setAgentName(e.target.value)} />
+    <section className="card project-editor">
+      <div className="card-header">
+        <h2>Project settings</h2>
+      </div>
 
-      <label htmlFor="criteria-text">Grading criteria</label>
-      <textarea id="criteria-text" rows={8} value={criteriaText} onChange={(e) => setCriteriaText(e.target.value)} />
+      <div className="field">
+        <label htmlFor="agent-name">Source agent name</label>
+        <p className="field-hint">Logfire span name suffix — e.g. rx_assistant_agent</p>
+        <input id="agent-name" value={agentName} onChange={(e) => setAgentName(e.target.value)} />
+      </div>
 
-      <h3>Labels</h3>
-      {labels.map((label, index) => (
-        <div key={label.id ?? `new-${index}`} className="label-row">
-          <input value={label.name} onChange={(e) => updateLabelName(index, e.target.value)} />
-          <button onClick={() => moveUp(index)} disabled={index === 0}>
-            ↑
-          </button>
-          <button onClick={() => moveDown(index)} disabled={index === labels.length - 1}>
-            ↓
-          </button>
-          <button onClick={() => removeLabel(index)}>Remove</button>
+      <div className="field">
+        <label htmlFor="criteria-text">Grading criteria</label>
+        <textarea
+          id="criteria-text"
+          rows={8}
+          value={criteriaText}
+          onChange={(e) => setCriteriaText(e.target.value)}
+        />
+      </div>
+
+      <div className="field">
+        <label>Labels</label>
+        <div className="label-chip-list">
+          {labels.map((label, index) => (
+            <div key={label.id ?? `new-${index}`} className="label-chip-row">
+              <input
+                className="label-chip-input"
+                value={label.name}
+                onChange={(e) => updateLabelName(index, e.target.value)}
+              />
+              <div className="label-chip-controls">
+                <button
+                  className="btn-icon"
+                  onClick={() => moveUp(index)}
+                  disabled={index === 0}
+                  aria-label="Move up"
+                >
+                  ↑
+                </button>
+                <button
+                  className="btn-icon"
+                  onClick={() => moveDown(index)}
+                  disabled={index === labels.length - 1}
+                  aria-label="Move down"
+                >
+                  ↓
+                </button>
+                <button
+                  className="btn-icon btn-icon-danger"
+                  onClick={() => removeLabel(index)}
+                  aria-label="Remove label"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
-      ))}
-      <button onClick={addLabel}>Add label</button>
+        <button className="btn btn-dashed btn-dashed-spaced" onClick={addLabel}>
+          + Add label
+        </button>
+      </div>
 
-      <button onClick={handleSave} disabled={saving}>
-        {saving ? "Saving…" : "Save"}
-      </button>
-      {error && <p className="error">{error}</p>}
+      <div className="card-footer">
+        <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
+          {saving ? "Saving…" : "Save changes"}
+        </button>
+        {error && <p className="error-inline">{error}</p>}
+      </div>
     </section>
   );
 }

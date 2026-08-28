@@ -41,39 +41,63 @@ export function Annotators() {
   };
 
   return (
-    <div className="annotators-page">
+    <div className="page">
       <AppHeader />
-      <h1>Choose annotator</h1>
-      {error && <p className="error">{error}</p>}
-      {annotators.map((annotator) => (
-        <div key={annotator.id} className="annotator-row">
-          <button
-            className={annotator.id === selectedId ? "selected" : ""}
-            onClick={() => setSelectedId(annotator.id)}
-          >
-            {annotator.id === selectedId ? "Selected" : "Select"}
-          </button>
-          <input
-            defaultValue={annotator.name}
-            onBlur={(e) => {
-              const value = e.target.value.trim();
-              if (value && value !== annotator.name) handleRename(annotator.id, value);
-            }}
-          />
-          <button onClick={() => handleDelete(annotator.id)}>Remove</button>
+      <main className="page-body page-body-narrow">
+        <div className="page-heading">
+          <h1>Choose annotator</h1>
+          <p className="page-subtitle">Pick a profile to grade as, or create a new one.</p>
         </div>
-      ))}
-      <div className="annotator-row">
-        <input
-          placeholder="New annotator name"
-          value={newName}
-          onChange={(e) => setNewName(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleCreate()}
-        />
-        <button onClick={handleCreate} disabled={!newName.trim()}>
-          Add
-        </button>
-      </div>
+        {error && <p className="error-banner">{error}</p>}
+        <div className="annotator-list">
+          {annotators.map((annotator) => (
+            <div
+              key={annotator.id}
+              className={`annotator-card${annotator.id === selectedId ? " annotator-card-selected" : ""}`}
+            >
+              <span className="avatar-circle" aria-hidden="true">
+                {annotator.name.slice(0, 1).toUpperCase()}
+              </span>
+              <input
+                className="annotator-name-input"
+                defaultValue={annotator.name}
+                onBlur={(e) => {
+                  const value = e.target.value.trim();
+                  if (value && value !== annotator.name) handleRename(annotator.id, value);
+                }}
+              />
+              <div className="annotator-card-actions">
+                <button
+                  className={annotator.id === selectedId ? "btn btn-primary btn-sm" : "btn btn-secondary btn-sm"}
+                  onClick={() => setSelectedId(annotator.id)}
+                >
+                  {annotator.id === selectedId ? "Selected" : "Select"}
+                </button>
+                <button className="btn btn-ghost btn-sm btn-danger-ghost" onClick={() => handleDelete(annotator.id)}>
+                  Remove
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="annotator-card annotator-card-new">
+          <span className="avatar-circle avatar-circle-new" aria-hidden="true">
+            +
+          </span>
+          <input
+            className="annotator-name-input"
+            placeholder="New annotator name"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleCreate()}
+          />
+          <div className="annotator-card-actions">
+            <button className="btn btn-primary btn-sm" onClick={handleCreate} disabled={!newName.trim()}>
+              Add
+            </button>
+          </div>
+        </div>
+      </main>
     </div>
   );
 }

@@ -8,10 +8,16 @@ export function AppHeader() {
 
   return (
     <header className="app-header">
-      <Link to="/">
-        <h1>Annotation Studio</h1>
+      <Link to="/" className="app-brand">
+        <span className="app-logo" aria-hidden="true">
+          AS
+        </span>
+        <span className="app-title">Annotation Studio</span>
       </Link>
-      <Link to="/annotators">{selectedName ?? "Choose annotator"}</Link>
+      <Link to="/annotators" className="annotator-pill">
+        <span className="annotator-pill-dot" aria-hidden="true" />
+        {selectedName ?? "Choose annotator"}
+      </Link>
     </header>
   );
 }

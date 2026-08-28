@@ -70,49 +70,59 @@ export function ProjectDetail() {
   if (selectedId === null) return <Navigate to="/annotators" replace />;
   if (error)
     return (
-      <div className="project-detail">
+      <div className="page">
         <AppHeader />
-        <p className="error">{error}</p>
+        <main className="page-body">
+          <p className="error-banner">{error}</p>
+        </main>
       </div>
     );
   if (project === null)
     return (
-      <div className="project-detail">
+      <div className="page">
         <AppHeader />
-        <p>Loading…</p>
+        <main className="page-body">
+          <p className="loading-text">Loading…</p>
+        </main>
       </div>
     );
 
   return (
-    <div className="project-detail">
+    <div className="page">
       <AppHeader />
-      <h1>{project.name}</h1>
-      <ProjectEditor
-        key={project.updated_at}
-        initialCriteriaText={project.criteria_text}
-        initialAgentName={project.top_level_agent_name}
-        initialLabels={project.labels}
-        onSave={async (values) => {
-          const updated = await updateProject(projectId, values);
-          setProject(updated);
-        }}
-      />
-
-      <h2>Interactions</h2>
-      {interactions.map((interaction) => (
-        <InteractionRow
-          key={`${interaction.trace_id}:${interaction.span_id}`}
-          projectId={projectId}
-          annotatorId={selectedId}
-          interaction={interaction}
-          labels={project.labels}
+      <main className="page-body">
+        <div className="page-heading">
+          <h1>{project.name}</h1>
+        </div>
+        <ProjectEditor
+          key={project.updated_at}
+          initialCriteriaText={project.criteria_text}
+          initialAgentName={project.top_level_agent_name}
+          initialLabels={project.labels}
+          onSave={async (values) => {
+            const updated = await updateProject(projectId, values);
+            setProject(updated);
+          }}
         />
-      ))}
-      {nextCursor && (
-        <button onClick={() => loadInteractions(nextCursor)} disabled={loading}>
-          {loading ? "Loading…" : "Load more"}
-        </button>
-      )}
+
+        <h2 className="interactions-heading">Interactions</h2>
+        <div className="interaction-list">
+          {interactions.map((interaction) => (
+            <InteractionRow
+              key={`${interaction.trace_id}:${interaction.span_id}`}
+              projectId={projectId}
+              annotatorId={selectedId}
+              interaction={interaction}
+              labels={project.labels}
+            />
+          ))}
+        </div>
+        {nextCursor && (
+          <button className="btn btn-secondary load-more-btn" onClick={() => loadInteractions(nextCursor)} disabled={loading}>
+            {loading ? "Loading…" : "Load more"}
+          </button>
+        )}
+      </main>
     </div>
   );
 }

@@ -15,18 +15,31 @@ export function ProjectList() {
       .catch((err: unknown) => setError(String(err)));
   }, []);
 
-  if (error) return <p className="error">{error}</p>;
-  if (projects === null) return <p>Loading…</p>;
-
   return (
-    <div className="project-list">
+    <div className="page">
       <AppHeader />
-      {projects.map((project) => (
-        <Link key={project.id} to={`/projects/${project.id}`} className="project-card">
-          <h2>{project.name}</h2>
-          <p>Source agent: {project.top_level_agent_name}</p>
-        </Link>
-      ))}
+      <main className="page-body">
+        {error && <p className="error-banner">{error}</p>}
+        {projects === null && !error && <p className="loading-text">Loading projects…</p>}
+        {projects !== null && (
+          <div className="project-grid">
+            {projects.map((project) => (
+              <Link key={project.id} to={`/projects/${project.id}`} className="project-card">
+                <span className="project-card-icon" aria-hidden="true">
+                  {project.name.slice(0, 1).toUpperCase()}
+                </span>
+                <div className="project-card-body">
+                  <h2>{project.name}</h2>
+                  <p className="project-card-meta">Source agent: {project.top_level_agent_name}</p>
+                </div>
+                <span className="project-card-arrow" aria-hidden="true">
+                  →
+                </span>
+              </Link>
+            ))}
+          </div>
+        )}
+      </main>
     </div>
   );
 }
