@@ -62,5 +62,17 @@ services:
         condition: service_healthy
     profiles: ["rx-assistant", "all"]
 
+  annotation-studio:
+    build:
+      context: .
+      dockerfile: apps/annotation-studio/Dockerfile
+    env_file: apps/annotation-studio/.env
+    volumes:
+      - annotation_studio_data:/app/apps/annotation-studio/data
+    ports:
+      - "8003:8000"
+    profiles: ["annotation-studio", "all"]
+
 volumes:
   rx_assistant_db_data:
+  annotation_studio_data:
