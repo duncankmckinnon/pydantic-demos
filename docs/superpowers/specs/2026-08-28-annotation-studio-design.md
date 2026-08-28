@@ -25,8 +25,9 @@ build well as a small SPA than as server-rendered HTML + vanilla JS.
 - One fixed source project: `rx-assistant`'s Logfire project (`rx-assistant-demo`). The
   other two Logfire projects in this org are out of scope until/unless their trace shape is
   confirmed to match — see "Interaction identification" below.
-- Read-only access to that project's traces. **No write-back onto the source trace** — see
-  "Out of Scope."
+- Read access to that project's traces plus append-only annotation events written into the
+  same trace with a separately minted rx-assistant project write token. Completed source
+  spans are never mutated.
 - No auth (repo-wide convention — everything here is local-only).
 
 ## Data Model (SQLite)
@@ -70,6 +71,10 @@ CREATE TABLE annotations (
     label_id INTEGER REFERENCES labels(id),
     description TEXT NOT NULL DEFAULT '',
     annotator_id INTEGER NOT NULL REFERENCES annotators(id),
+    revision INTEGER NOT NULL DEFAULT 1,
+    writeback_status TEXT NOT NULL DEFAULT 'pending',
+    writeback_error TEXT,
+    written_at TIMESTAMP,
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL,
     UNIQUE(project_id, trace_id, span_id, annotator_id)
@@ -92,6 +97,8 @@ profile may be deleted; deleting one referenced by any annotation is rejected wi
 
 Each reviewer may independently annotate the same interaction. Annotation identity is the
 combination of project, trace, span, and annotator—not just the interaction itself.
+Every upsert increments the annotation's `revision`. The stable remote event key is
+`annotation:{annotation_id}:revision:{revision}`.
 
 Labels also have stable identities. Project label updates carry existing label IDs so names
 can be edited or reordered without breaking annotations. New labels omit the ID. Removing a
@@ -189,17 +196,42 @@ url = f"{client.base_url}/{info['organization_name']}/{info['project_name']}?q=t
 
 No separate org-name setting is needed; it comes from the token itself.
 
+### Writing annotation events
+
+SQLite remains the authoritative current state, but every annotation save also appends a
+structured Logfire record to the `rx-assistant-demo` trace. Logfire cannot mutate an already
+completed agent span. Instead, the backend reconstructs a W3C trace context using the stored
+source IDs:
+
+```text
+traceparent: 00-{trace_id}-{span_id}-01
+```
+
+Within `logfire.attach_context(...)`, it emits an `annotation_studio.annotation` info record.
+That record appears as a child of the graded `invoke_agent` span. It carries the stable event
+key, annotation ID and revision, annotator ID and name, label ID and name, description,
+project ID, and source trace/span IDs. Its tags are `annotation-studio`, `human-annotation`,
+and `annotator-{annotator_id}`. The stable ID tag preserves identity if a profile is renamed;
+the human-readable name remains a searchable attribute.
+
+The writer uses a second, local Logfire SDK configuration initialized once with
+`RX_ASSISTANT_LOGFIRE_WRITE_TOKEN`. It must not replace the process-global configuration that
+sends Annotation Studio's own telemetry to its dedicated project via `LOGFIRE_TOKEN`.
+
+The SQLite transaction commits before remote delivery. A successful append sets
+`writeback_status = 'written'`, clears `writeback_error`, and records `written_at`. A failed
+append leaves the reviewer annotation saved, sets `writeback_status = 'failed'` plus a safe
+error string, and returns that status to the frontend. The UI warns the reviewer without
+discarding their work. There is no automatic retry worker in v1; a later edit creates and
+attempts a new revision. Delivery can fail ambiguously, so a retry may duplicate a Logfire
+record; consumers can deduplicate using the stable event key.
+
 ## Out of Scope
 
-- **Write-back onto the source trace.** `AsyncLogfireQueryClient` only does reads; writing an
-  annotation onto the original `rx-assistant-demo` trace would need a *second*,
-  separately-minted write token for that project (on top of the read token above), which
-  isn't worth the extra credential to manage for v1 — annotations live only in this app's own
-  SQLite. If this is wanted later, the mechanism is proven out: construct a remote
-  `SpanContext` from the stored `trace_id`/`span_id` (standard OTel context propagation, the
-  same trick used to continue a trace across a network boundary via `traceparent`), attach it
-  as the current context, then call `logfire.info(...)` under a `rx-assistant`-scoped write
-  token — the new log lands as a child entry on that trace's timeline.
+- **Mutation of completed source spans.** Annotation write-back is an append-only child log,
+  never an update to attributes on the original `invoke_agent` span.
+- **Guaranteed exactly-once delivery or an automatic retry worker.** SQLite exposes the last
+  write-back status; stable event keys allow downstream deduplication after ambiguous failure.
 - **Logfire's native annotation queue.** It's a gated Design-Partner/early-access feature
   with no documented public API for reading queue items or writing verdicts into it.
   `annotation-studio` is its own system of record, not an integration with that feature.
@@ -227,6 +259,7 @@ apps/annotation-studio/
     settings.py                      # SourceSettings, AppSettings (see below)
     db.py                            # stdlib sqlite3 access
     logfire_client.py                # AsyncLogfireQueryClient wrapper + message parsing
+    logfire_writer.py                # separate local SDK config + child annotation log
     routes.py                        # FastAPI routes, mounts built frontend as static files
     static/dist/                     # built frontend output (gitignored; built in Docker/dev)
   tests/
@@ -256,7 +289,8 @@ apps/annotation-studio/
   from Logfire, merged only with the selected annotator's existing annotation for each.
 - `PUT /api/projects/{id}/annotations/{trace_id}/{span_id}` — upsert an annotation
   (`label_id`, `description`, `annotator_id`). The backend rejects an unknown annotator or a
-  label that does not belong to the project.
+  label that does not belong to the project, then attempts write-back and returns the saved
+  annotation including `revision`, `writeback_status`, `writeback_error`, and `written_at`.
 
 ## Frontend
 
@@ -278,6 +312,7 @@ navigation.
   - "View full conversation" toggle (raw transcript, including tool calls)
   - Label picker (from the project's labels)
   - Description textarea with explicit Save
+  - Write-back status; a failed append displays a warning while retaining the saved grade
   - "Open trace in Logfire ↗" link (new tab)
 
 Project detail requires a selected annotator. With no valid selection, it shows a clear prompt
@@ -322,9 +357,10 @@ directly.
 
 ```python
 class SourceSettings(BaseSettings):
-    """Read-only access to rx-assistant's Logfire project."""
+    """Read spans and append annotation events in rx-assistant's Logfire project."""
     model_config = SettingsConfigDict(extra="ignore", populate_by_name=True)
     read_token: str = Field(validation_alias="RX_ASSISTANT_LOGFIRE_READ_TOKEN")
+    write_token: str = Field(validation_alias="RX_ASSISTANT_LOGFIRE_WRITE_TOKEN")
     top_level_agent_name: str = Field(default="rx_assistant_agent")
 
 
@@ -348,6 +384,10 @@ LOGFIRE_TOKEN=
 # Read-only access to rx-assistant's Logfire project, minted separately from
 # rx-assistant's own LOGFIRE_TOKEN (apps/rx-assistant/.env is not shared).
 RX_ASSISTANT_LOGFIRE_READ_TOKEN=
+
+# Append-only annotation events sent to the rx-assistant Logfire project. This is
+# distinct from both the read token above and Annotation Studio's LOGFIRE_TOKEN.
+RX_ASSISTANT_LOGFIRE_WRITE_TOKEN=
 
 ANNOTATION_STUDIO_DATABASE_PATH=data/annotation_studio.sqlite3
 ```
@@ -387,8 +427,9 @@ imported directly, even though `demo-core` already pulls `logfire` in transitive
 ## Testing
 
 - Backend: `pytest`, mirroring `rx-assistant`'s pattern — a `conftest.py` force-setting dummy
-  `LOGFIRE_TOKEN`, `RX_ASSISTANT_LOGFIRE_READ_TOKEN`, `LOGFIRE_SEND_TO_LOGFIRE=false`, and a
-  temp-file `ANNOTATION_STUDIO_DATABASE_PATH` at module level. No `tests/__init__.py`.
+  `LOGFIRE_TOKEN`, `RX_ASSISTANT_LOGFIRE_READ_TOKEN`, `RX_ASSISTANT_LOGFIRE_WRITE_TOKEN`,
+  `LOGFIRE_SEND_TO_LOGFIRE=false`, and a temp-file `ANNOTATION_STUDIO_DATABASE_PATH` at module
+  level. No `tests/__init__.py`.
   - Unit tests for the message-parsing logic (input/output extraction from
     `pydantic_ai.all_messages`, using fixture JSON captured from a real `rx-assistant-demo`
     span during design).
@@ -402,6 +443,9 @@ imported directly, even though `demo-core` already pulls `logfire` in transitive
     a rejected combined update rolls back criteria, agent-name, and label changes together.
   - Query-wrapper tests cover exclusive keyset pagination, including multiple spans with the
     same timestamp, so page boundaries neither duplicate nor omit interactions.
+  - Writer tests use a fake local Logfire client and verify reconstructed parent context,
+    event keys, revision increments, annotator attributes/tags, successful status updates,
+    and failure-after-local-save behavior. Tests never send real annotation events.
 - Frontend: no component-level test suite for v1 given the small surface area; `npm run
   build` succeeding is the CI-relevant check, manual in-browser verification is the bar for
   UI behavior, per this repo's existing testing norms.
