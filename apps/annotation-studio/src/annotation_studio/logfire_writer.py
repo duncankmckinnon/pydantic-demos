@@ -56,5 +56,9 @@ class AnnotationWriter:
                 # convention is replicated here against self.client instead.
                 **{"logfire.feedback.name": "label", "logfire.feedback.comment": annotation["description"]},
             )
-        if not self.client.force_flush(timeout_millis=3000):
+        try:
+            flushed = self.client.force_flush(timeout_millis=3000)
+        except Exception as exc:
+            raise WritebackError(f"Logfire exporter raised during flush: {exc}") from exc
+        if not flushed:
             raise WritebackError("Logfire exporter did not flush within 3000ms")

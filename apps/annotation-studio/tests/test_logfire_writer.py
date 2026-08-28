@@ -92,3 +92,12 @@ def test_false_flush_result_is_a_write_failure(fake_logfire):
     fake_logfire.flush_result = False
     with pytest.raises(WritebackError):
         AnnotationWriter("write", client=fake_logfire).write(annotation(), annotator(), label())
+
+
+def test_flush_exception_is_translated_to_write_failure(fake_logfire):
+    def raise_on_flush(timeout_millis=3000):
+        raise ConnectionError("exporter connection reset")
+
+    fake_logfire.force_flush = raise_on_flush
+    with pytest.raises(WritebackError):
+        AnnotationWriter("write", client=fake_logfire).write(annotation(), annotator(), label())
