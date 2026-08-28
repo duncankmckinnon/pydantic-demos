@@ -55,6 +55,13 @@ CREATE TABLE labels (
     UNIQUE(project_id, name)
 );
 
+CREATE TABLE annotators (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    created_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP NOT NULL
+);
+
 CREATE TABLE annotations (
     id INTEGER PRIMARY KEY,
     project_id INTEGER NOT NULL REFERENCES projects(id),
@@ -62,10 +69,10 @@ CREATE TABLE annotations (
     span_id TEXT NOT NULL,                 -- the invoke_agent span this grades
     label_id INTEGER REFERENCES labels(id),
     description TEXT NOT NULL DEFAULT '',
-    annotator TEXT NOT NULL DEFAULT '',
+    annotator_id INTEGER NOT NULL REFERENCES annotators(id),
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL,
-    UNIQUE(project_id, trace_id, span_id)
+    UNIQUE(project_id, trace_id, span_id, annotator_id)
 );
 ```
 
@@ -76,6 +83,21 @@ need its own read token minted and wired into settings (see Settings below), whi
 config/deploy change, not a runtime one; the projects table exists so criteria/labels/
 annotations have somewhere to live per project once that's supported, not to make onboarding
 self-serve today.
+
+Annotators are lightweight local profiles, not authenticated users. A reviewer creates or
+selects a profile on the `/annotators` page, and the frontend remembers that profile's stable
+ID in browser `localStorage`. Annotator names are trimmed, non-empty, and unique
+case-insensitively. Profiles may be renamed without changing annotation ownership. An unused
+profile may be deleted; deleting one referenced by any annotation is rejected with HTTP 409.
+
+Each reviewer may independently annotate the same interaction. Annotation identity is the
+combination of project, trace, span, and annotator—not just the interaction itself.
+
+Labels also have stable identities. Project label updates carry existing label IDs so names
+can be edited or reordered without breaking annotations. New labels omit the ID. Removing a
+label referenced by an annotation is rejected with HTTP 409. The complete project update
+(criteria, agent name, and labels) is one database transaction: if any part fails, none of it
+is persisted. A submitted annotation label must belong to the annotation's project.
 
 ## Logfire Integration
 
@@ -96,15 +118,17 @@ async with AsyncLogfireQueryClient(settings.rx_assistant_read_token) as client:
     result = await client.query_json_rows(
         sql,
         min_timestamp=fourteen_days_ago,
-        max_timestamp=cursor,   # None on first page, else the oldest start_timestamp seen so far
+        max_timestamp=cursor_timestamp,  # None on the first page; coarse server-side bound
         limit=page_size,
     )
     rows = result["rows"]
 ```
 
-`min_timestamp`/`max_timestamp` bound the query server-side (max range is 14 days); paging
-"load more" is done by re-querying with `max_timestamp` set to the oldest `start_timestamp`
-already shown, `ORDER BY start_timestamp DESC` in the SQL. No filter UI in v1 — always
+`min_timestamp`/`max_timestamp` bound the query server-side (max range is 14 days). Paging
+uses an opaque cursor containing the last row's `start_timestamp` and `span_id`, with an
+exclusive keyset predicate and `ORDER BY start_timestamp DESC, span_id DESC`. The backend
+fetches one row beyond the page size to determine whether another page exists. This avoids
+duplicates or omissions when several spans share a timestamp. No filter UI in v1—always
 most-recent-first.
 
 ### Interaction identification
@@ -140,8 +164,9 @@ From the matched span's `attributes`:
   Logfire's scrubbing.
 
 Parsing rule:
-- **Input** = the text content of the last `role: user` message with index
-  `< new_message_index`.
+- **Input** = the text content of the first `role: user` message at index
+  `>= new_message_index` that contains a text part (skipping tool-call responses, which also
+  use the `user` role).
 - **Output** = `final_result` if present and non-empty; otherwise the text content of the
   last `role: assistant` message at index `>= new_message_index`.
 - **Full conversation** (optional expand within the expanded interaction) = every message in
@@ -221,20 +246,31 @@ apps/annotation-studio/
 
 - `GET /api/projects` — list projects (v1: always the one seeded row).
 - `GET /api/projects/{id}` — project detail incl. criteria + labels.
-- `PUT /api/projects/{id}` — update `criteria_text` and/or labels.
-- `GET /api/projects/{id}/interactions?cursor=` — fetch a page of interactions from Logfire,
-  merged with any existing local annotation for each.
+- `PUT /api/projects/{id}` — atomically update `criteria_text`, `top_level_agent_name`, and/or
+  labels. Existing labels are addressed by stable ID; new labels omit the ID.
+- `GET /api/annotators` — list annotator profiles.
+- `POST /api/annotators` — create an annotator profile.
+- `PUT /api/annotators/{id}` — rename an annotator profile.
+- `DELETE /api/annotators/{id}` — delete an unused annotator profile; 409 when referenced.
+- `GET /api/projects/{id}/interactions?annotator_id=&cursor=` — fetch a page of interactions
+  from Logfire, merged only with the selected annotator's existing annotation for each.
 - `PUT /api/projects/{id}/annotations/{trace_id}/{span_id}` — upsert an annotation
-  (`label_id`, `description`, `annotator`).
+  (`label_id`, `description`, `annotator_id`). The backend rejects an unknown annotator or a
+  label that does not belong to the project.
 
 ## Frontend
 
 React + TypeScript + Vite, `react-markdown` for input/output rendering, React Router for
 navigation.
 
+- **Annotator selection** (`/annotators`) — create, rename, select, and delete unused local
+  annotator profiles. Selection is saved in browser `localStorage`; this is convenience state,
+  not authentication. The app header shows the selected annotator and links back to this page.
+  If the stored profile no longer exists, its selection is cleared.
 - **Project list** (`/`) — cards for each project (v1: just `rx-assistant`).
 - **Project detail** (`/projects/:id`) — top: criteria edit/save textarea (explicit Save
-  button, not autosave). Label-set editor below it (add/remove/reorder labels). Main:
+  button, not autosave) plus an editable `top_level_agent_name` field. Label-set editor below
+  it (add/rename/remove/reorder labels using stable IDs). Main:
   paginated list of interaction rows (timestamp, truncated input preview, current label badge
   if graded). Clicking a row expands it in place to show:
   - Input (rendered markdown)
@@ -243,6 +279,9 @@ navigation.
   - Label picker (from the project's labels)
   - Description textarea with explicit Save
   - "Open trace in Logfire ↗" link (new tab)
+
+Project detail requires a selected annotator. With no valid selection, it shows a clear prompt
+linking to `/annotators` and does not load or enable grading controls.
 
 ### Frontend build (deviation from repo convention)
 
@@ -292,7 +331,6 @@ class SourceSettings(BaseSettings):
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", populate_by_name=True)
     database_path: str = Field(default="data/annotation_studio.sqlite3", validation_alias="ANNOTATION_STUDIO_DATABASE_PATH")
-    default_annotator: str = Field(default="", validation_alias="ANNOTATION_STUDIO_DEFAULT_ANNOTATOR")
 ```
 
 `demo_core.settings.LogfireSettings` (bare `LOGFIRE_TOKEN`) is reused as-is for
@@ -312,7 +350,6 @@ LOGFIRE_TOKEN=
 RX_ASSISTANT_LOGFIRE_READ_TOKEN=
 
 ANNOTATION_STUDIO_DATABASE_PATH=data/annotation_studio.sqlite3
-ANNOTATION_STUDIO_DEFAULT_ANNOTATOR=
 ```
 
 No `PYDANTIC_AI_GATEWAY_API_KEY` — deviates from the `add-demo` skill's usual minimum since
@@ -358,6 +395,13 @@ imported directly, even though `demo-core` already pulls `logfire` in transitive
   - Route tests via FastAPI's `TestClient`, monkeypatching the `logfire_client` query
     function (the same way `rx-assistant`'s tests monkeypatch `_query_conditions`) to return
     canned rows — the default suite never calls the real Logfire query API.
+  - Database and route tests prove that two annotators can independently grade the same
+    interaction, annotator names are normalized and unique case-insensitively, referenced
+    annotators cannot be deleted, and annotation writes reject labels from another project.
+  - Project-update tests prove label rename/reorder preserves stable IDs and annotations, and
+    a rejected combined update rolls back criteria, agent-name, and label changes together.
+  - Query-wrapper tests cover exclusive keyset pagination, including multiple spans with the
+    same timestamp, so page boundaries neither duplicate nor omit interactions.
 - Frontend: no component-level test suite for v1 given the small surface area; `npm run
   build` succeeding is the CI-relevant check, manual in-browser verification is the bar for
   UI behavior, per this repo's existing testing norms.
