@@ -1,0 +1,21 @@
+[project]
+name = "annotation-studio"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "demo-core",
+    "logfire",
+    "fastapi",
+    "uvicorn[standard]",
+    "python-dotenv",
+]
+
+[tool.uv.sources]
+demo-core = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/annotation_studio"]
