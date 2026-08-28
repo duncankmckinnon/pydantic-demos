@@ -88,40 +88,50 @@ export function ProjectDetail() {
     );
 
   return (
-    <div className="page">
+    <div className="page page-wide">
       <AppHeader />
       <main className="page-body">
         <div className="page-heading">
           <h1>{project.name}</h1>
         </div>
-        <ProjectEditor
-          key={project.updated_at}
-          initialCriteriaText={project.criteria_text}
-          initialAgentName={project.top_level_agent_name}
-          initialLabels={project.labels}
-          onSave={async (values) => {
-            const updated = await updateProject(projectId, values);
-            setProject(updated);
-          }}
-        />
+        <div className="project-detail-layout">
+          <div className="project-detail-main">
+            <h2 className="interactions-heading">Interactions</h2>
+            <div className="interaction-list">
+              {interactions.map((interaction) => (
+                <InteractionRow
+                  key={`${interaction.trace_id}:${interaction.span_id}`}
+                  projectId={projectId}
+                  annotatorId={selectedId}
+                  interaction={interaction}
+                  labels={project.labels}
+                />
+              ))}
+            </div>
+            {nextCursor && (
+              <button
+                className="btn btn-secondary load-more-btn"
+                onClick={() => loadInteractions(nextCursor)}
+                disabled={loading}
+              >
+                {loading ? "Loading…" : "Load more"}
+              </button>
+            )}
+          </div>
 
-        <h2 className="interactions-heading">Interactions</h2>
-        <div className="interaction-list">
-          {interactions.map((interaction) => (
-            <InteractionRow
-              key={`${interaction.trace_id}:${interaction.span_id}`}
-              projectId={projectId}
-              annotatorId={selectedId}
-              interaction={interaction}
-              labels={project.labels}
+          <aside className="project-detail-sidebar">
+            <ProjectEditor
+              key={project.updated_at}
+              initialCriteriaText={project.criteria_text}
+              initialAgentName={project.top_level_agent_name}
+              initialLabels={project.labels}
+              onSave={async (values) => {
+                const updated = await updateProject(projectId, values);
+                setProject(updated);
+              }}
             />
-          ))}
+          </aside>
         </div>
-        {nextCursor && (
-          <button className="btn btn-secondary load-more-btn" onClick={() => loadInteractions(nextCursor)} disabled={loading}>
-            {loading ? "Loading…" : "Load more"}
-          </button>
-        )}
       </main>
     </div>
   );
