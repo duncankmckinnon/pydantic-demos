@@ -1,0 +1,57 @@
+{
+  "trace_id": "01a045b8d6d40acd6c98ee00f1a3fe93",
+  "span_id": "c7a2373c3fe61d3f",
+  "start_timestamp": "2026-08-28T00:15:36.667186Z",
+  "duration": 23.455358413,
+  "attributes": {
+    "pydantic_ai.new_message_index": 2,
+    "pydantic_ai.all_messages": [
+      {
+        "role": "user",
+        "parts": [{"type": "text", "content": "What medications could I ask for to help treat ADHD"}]
+      },
+      {
+        "role": "assistant",
+        "parts": [
+          {"type": "text", "content": "Common ADHD medications include stimulants like methylphenidate and amphetamine-based options."}
+        ],
+        "finish_reason": "stop"
+      },
+      {
+        "role": "user",
+        "parts": [{"type": "text", "content": "What about major depressive disorder?"}]
+      },
+      {
+        "role": "assistant",
+        "parts": [
+          {
+            "type": "tool_call",
+            "id": "toolu_01RKeoUzaDHUVtmna136AtBM",
+            "name": "search_medications",
+            "arguments": {"query": "major depressive disorder", "condition": "MDD", "limit": 5}
+          }
+        ],
+        "finish_reason": "tool_call"
+      },
+      {
+        "role": "user",
+        "parts": [
+          {
+            "type": "tool_call_response",
+            "id": "toolu_01RKeoUzaDHUVtmna136AtBM",
+            "name": "search_medications",
+            "result": [{"med_name": "sertraline", "generic_name": "sertraline", "brand_names": "Zoloft"}]
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "parts": [
+          {"type": "text", "content": "Major depressive disorder (MDD) is often treated with SSRIs such as sertraline (Zoloft)."}
+        ],
+        "finish_reason": "stop"
+      }
+    ],
+    "final_result": "[Scrubbed due to 'auth']"
+  }
+}

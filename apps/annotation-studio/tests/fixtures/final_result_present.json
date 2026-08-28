@@ -1,0 +1,18 @@
+{
+  "trace_id": "trace-final-result-present",
+  "span_id": "span-1",
+  "start_timestamp": "2026-08-28T01:00:00.000000Z",
+  "duration": 1.2,
+  "attributes": {
+    "pydantic_ai.new_message_index": 0,
+    "pydantic_ai.all_messages": [
+      {"role": "user", "parts": [{"type": "text", "content": "Is ibuprofen safe with warfarin?"}]},
+      {
+        "role": "assistant",
+        "parts": [{"type": "text", "content": "internal draft text, should not be shown"}],
+        "finish_reason": "stop"
+      }
+    ],
+    "final_result": "No — ibuprofen combined with warfarin significantly raises bleeding risk; consult your prescriber."
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "trace_id": "trace-malformed",
+  "span_id": "span-2",
+  "start_timestamp": "2026-08-28T02:00:00.000000Z",
+  "duration": 0.5,
+  "attributes": {
+    "some_other_field": "value"
+  }
+}
