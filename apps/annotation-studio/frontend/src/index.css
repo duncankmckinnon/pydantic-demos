@@ -131,7 +131,7 @@ body {
 }
 
 .page-wide {
-  max-width: 1120px;
+  max-width: 1440px;
 }
 
 .page-body {
@@ -670,8 +670,8 @@ label {
 
 .project-detail-layout {
   display: grid;
-  grid-template-columns: 1fr 340px;
-  gap: 2rem;
+  grid-template-columns: 1fr 420px;
+  gap: 2.5rem;
   align-items: start;
 }
 
@@ -682,9 +682,14 @@ label {
 .project-detail-sidebar {
   position: sticky;
   top: 1.5rem;
+  /* Bulletproof sticky: capped to the viewport with its own internal scroll, so
+     even unusually long content (e.g. a long criteria paragraph) can never push
+     this panel — or its Save button — out of view while grading interactions. */
+  max-height: calc(100vh - 3rem);
+  overflow-y: auto;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 980px) {
   .project-detail-layout {
     grid-template-columns: 1fr;
   }
@@ -693,6 +698,8 @@ label {
     position: static;
     order: -1;
     margin-bottom: 0.5rem;
+    max-height: none;
+    overflow-y: visible;
   }
 }
 
