@@ -214,6 +214,12 @@ project ID, and source trace/span IDs. Its tags are `annotation-studio`, `human-
 and `annotator-{annotator_id}`. The stable ID tag preserves identity if a profile is renamed;
 the human-readable name remains a searchable attribute.
 
+After emitting the record, the writer calls `force_flush(timeout_millis=3000)`. Only a true
+result is treated as written; a false result is a delivery failure. This adds up to three
+seconds to a save when the exporter is unhealthy, which is acceptable for this local review
+tool and gives the API's write-back status concrete semantics despite Logfire's normal
+buffered export.
+
 The writer uses a second, local Logfire SDK configuration initialized once with
 `RX_ASSISTANT_LOGFIRE_WRITE_TOKEN`. It must not replace the process-global configuration that
 sends Annotation Studio's own telemetry to its dedicated project via `LOGFIRE_TOKEN`.
