@@ -128,7 +128,15 @@ def _row(trace_id: str, start_timestamp: str, span_id: str = "c7a2373c3fe61d3f")
 
 def test_build_trace_link_matches_logfire_mcp_server_format() -> None:
     url = logfire_client.build_trace_link("https://logfire-us.pydantic.dev", "duncan", "rx-assistant-demo", "abc123")
-    assert url == "https://logfire-us.pydantic.dev/duncan/rx-assistant-demo?q=trace_id='abc123'"
+    assert url == "https://logfire-us.pydantic.dev/duncan/rx-assistant-demo?q=trace_id='abc123'&last=%2214d%22"
+
+
+def test_build_trace_link_lookback_window_matches_fetch_project_interactions_bound() -> None:
+    # The link's `last=` window must cover everything fetch_project_interactions can ever
+    # return (its own min_timestamp bound below) — otherwise "Open trace in Logfire" could
+    # open to an empty page for a trace this app itself is showing in the interaction list.
+    url = logfire_client.build_trace_link("https://logfire-us.pydantic.dev", "duncan", "rx-assistant-demo", "abc123")
+    assert f"%22{logfire_client.LOOKBACK_DAYS}d%22" in url
 
 
 async def test_fetch_project_interactions_returns_parsed_rows_with_trace_urls(monkeypatch) -> None:
@@ -141,7 +149,7 @@ async def test_fetch_project_interactions_returns_parsed_rows_with_trace_urls(mo
 
     assert len(interactions) == 1
     assert interactions[0].trace_id == "trace-1"
-    assert interactions[0].trace_url == "https://logfire-us.pydantic.dev/duncan/rx-assistant-demo?q=trace_id='trace-1'"
+    assert interactions[0].trace_url == "https://logfire-us.pydantic.dev/duncan/rx-assistant-demo?q=trace_id='trace-1'&last=%2214d%22"
     assert next_cursor is None  # only 1 row came back for limit+1=21 — no next page
     assert "invoke_agent rx_assistant_agent" in fake_client.queries[0]["sql"]
     assert fake_client.queries[0]["limit"] == 21

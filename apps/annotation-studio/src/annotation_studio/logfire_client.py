@@ -3,12 +3,20 @@ import json
 import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 from logfire.experimental.query_client import AsyncLogfireQueryClient
 
 AGENT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_]+$")
 TRACE_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 SPAN_ID_PATTERN = re.compile(r"^[0-9a-f]{16}$")
+
+# How far back an interaction can be and still show up in fetch_project_interactions
+# (its own min_timestamp bound, below) — also used as the trace link's lookback window so
+# "Open trace in Logfire" is guaranteed to actually find the trace: the Logfire UI's own
+# default lookback is much shorter than this, and without an explicit `last=` window an
+# older trace's page would just render empty despite the trace_id filter being correct.
+LOOKBACK_DAYS = 14
 
 
 def validate_agent_name(name: str) -> None:
@@ -133,7 +141,11 @@ def parse_interaction(row: dict, trace_url: str) -> Interaction:
 
 
 def build_trace_link(base_url: str, organization_name: str, project_name: str, trace_id: str) -> str:
-    return f"{base_url}/{organization_name}/{project_name}?q=trace_id='{trace_id}'"
+    # `last` takes a JSON-quoted duration string (e.g. `"14d"`, matching what the Logfire UI
+    # itself writes into the URL when you pick a time range there) — quote() percent-encodes
+    # the literal double quotes the same way.
+    last = quote(f'"{LOOKBACK_DAYS}d"')
+    return f"{base_url}/{organization_name}/{project_name}?q=trace_id='{trace_id}'&last={last}"
 
 
 async def fetch_project_interactions(
@@ -153,7 +165,7 @@ async def fetch_project_interactions(
     validate_agent_name(top_level_agent_name)
 
     decoded = decode_cursor(cursor) if cursor else None
-    min_timestamp = datetime.now(timezone.utc) - timedelta(days=14)
+    min_timestamp = datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS)
     sql = (
         "SELECT trace_id, span_id, start_timestamp, duration, attributes "
         "FROM records "
