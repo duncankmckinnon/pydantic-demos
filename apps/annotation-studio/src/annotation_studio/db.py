@@ -168,7 +168,7 @@ def update_project(
                 ).fetchall()
             }
             keep_ids: set[int] = set()
-            for order, label in enumerate(labels):
+            for label in labels:
                 if label.id is not None:
                     if label.id not in existing_ids:
                         raise ValidationError(f"Label {label.id} does not belong to this project")
@@ -186,7 +186,7 @@ def update_project(
                         (label.name, order, label.id),
                     )
                 else:
-                    cursor = conn.execute(
+                    conn.execute(
                         "INSERT INTO labels (project_id, name, sort_order) VALUES (?, ?, ?)",
                         (project_id, label.name, order),
                     )

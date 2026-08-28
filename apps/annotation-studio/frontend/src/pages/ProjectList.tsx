@@ -2,14 +2,12 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { listProjects } from "../api";
-import { useAnnotator } from "../annotator";
+import { AppHeader } from "../components/AppHeader";
 import type { ProjectSummary } from "../types";
 
 export function ProjectList() {
   const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const { annotators, selectedId } = useAnnotator();
-  const selectedName = annotators.find((a) => a.id === selectedId)?.name;
 
   useEffect(() => {
     listProjects()
@@ -22,10 +20,7 @@ export function ProjectList() {
 
   return (
     <div className="project-list">
-      <header className="app-header">
-        <h1>Annotation Studio</h1>
-        <Link to="/annotators">{selectedName ?? "Choose annotator"}</Link>
-      </header>
+      <AppHeader />
       {projects.map((project) => (
         <Link key={project.id} to={`/projects/${project.id}`} className="project-card">
           <h2>{project.name}</h2>

@@ -2,7 +2,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -53,6 +53,10 @@ def create_annotation_studio_app(
 
         @app.get("/{full_path:path}")
         async def serve_frontend(full_path: str) -> FileResponse:
+            # An unmatched /api/* path is a genuine 404 (mistyped or nonexistent route),
+            # not a client-side route the SPA should handle — don't mask it with index.html.
+            if full_path.startswith("api/"):
+                raise HTTPException(status_code=404)
             return FileResponse(_STATIC_DIST / "index.html")
 
     return app

@@ -45,13 +45,18 @@ export function ProjectEditor({ initialCriteriaText, initialAgentName, initialLa
   const addLabel = () => setLabels((prev) => [...prev, { id: null, name: "New label" }]);
 
   const handleSave = async () => {
-    setSaving(true);
     setError(null);
+    const trimmedLabels = labels.map((l) => ({ ...l, name: l.name.trim() }));
+    if (trimmedLabels.some((l) => l.name.length === 0)) {
+      setError("Label name cannot be empty");
+      return;
+    }
+    setSaving(true);
     try {
       await onSave({
         criteria_text: criteriaText,
         top_level_agent_name: agentName,
-        labels: labels.map((l) => ({ ...l, name: l.name.trim() })).filter((l) => l.name.length > 0),
+        labels: trimmedLabels,
       });
     } catch (err) {
       // Deliberately does not replace loaded state on error — the reviewer's edits stay

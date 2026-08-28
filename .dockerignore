@@ -4,6 +4,7 @@
 **/*.pyc
 .env
 apps/*/.env
+apps/*/data
 docs/
 drugs.csv*
 **/node_modules

@@ -13,7 +13,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 COPY packages/demo_core ./packages/demo_core
 COPY apps/annotation-studio ./apps/annotation-studio
-COPY --from=frontend-build /app/apps/annotation-studio/frontend/dist \
+COPY --from=frontend-build /app/apps/annotation-studio/src/annotation_studio/static/dist \
      ./apps/annotation-studio/src/annotation_studio/static/dist
 
 RUN uv sync --frozen --package annotation-studio

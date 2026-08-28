@@ -3,6 +3,7 @@ import { Navigate, useParams } from "react-router-dom";
 
 import { getProject, listInteractions, updateProject } from "../api";
 import { useAnnotator } from "../annotator";
+import { AppHeader } from "../components/AppHeader";
 import { InteractionRow } from "../components/InteractionRow";
 import { ProjectEditor } from "../components/ProjectEditor";
 import type { Interaction, Project } from "../types";
@@ -67,13 +68,27 @@ export function ProjectDetail() {
   }, [projectId, selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (selectedId === null) return <Navigate to="/annotators" replace />;
-  if (error) return <p className="error">{error}</p>;
-  if (project === null) return <p>Loading…</p>;
+  if (error)
+    return (
+      <div className="project-detail">
+        <AppHeader />
+        <p className="error">{error}</p>
+      </div>
+    );
+  if (project === null)
+    return (
+      <div className="project-detail">
+        <AppHeader />
+        <p>Loading…</p>
+      </div>
+    );
 
   return (
     <div className="project-detail">
+      <AppHeader />
       <h1>{project.name}</h1>
       <ProjectEditor
+        key={project.updated_at}
         initialCriteriaText={project.criteria_text}
         initialAgentName={project.top_level_agent_name}
         initialLabels={project.labels}

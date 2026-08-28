@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { createAnnotator, deleteAnnotator, renameAnnotator } from "../api";
 import { useAnnotator } from "../annotator";
+import { AppHeader } from "../components/AppHeader";
 
 export function Annotators() {
   const { annotators, selectedId, setSelectedId, refresh } = useAnnotator();
@@ -41,6 +42,7 @@ export function Annotators() {
 
   return (
     <div className="annotators-page">
+      <AppHeader />
       <h1>Choose annotator</h1>
       {error && <p className="error">{error}</p>}
       {annotators.map((annotator) => (

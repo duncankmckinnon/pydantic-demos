@@ -17,7 +17,9 @@ const AnnotatorContext = createContext<AnnotatorContextValue | null>(null);
 function readStoredId(): number | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? Number(raw) : null;
+    if (!raw) return null;
+    const n = Number(raw);
+    return Number.isInteger(n) && n > 0 ? n : null;
   } catch {
     return null;
   }
