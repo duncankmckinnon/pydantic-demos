@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Navigate, useParams } from "react-router-dom";
 
 import { getProject, listInteractions, updateProject } from "../api";
@@ -18,6 +18,14 @@ export function ProjectDetail() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Tracks which annotator is currently "owned" by the UI, so a slow "Load more"
+  // response fired for a previously-selected annotator can't clobber a newer
+  // fetch's results after the user switches annotators.
+  const activeAnnotatorIdRef = useRef(selectedId);
+  useEffect(() => {
+    activeAnnotatorIdRef.current = selectedId;
+  }, [selectedId]);
+
   const loadProject = useCallback(() => {
     getProject(projectId)
       .then(setProject)
@@ -27,14 +35,21 @@ export function ProjectDetail() {
   const loadInteractions = useCallback(
     (cursor: string | null) => {
       if (selectedId === null) return;
+      const firedForAnnotatorId = selectedId;
       setLoading(true);
       listInteractions(projectId, selectedId, cursor)
         .then((page) => {
+          // Discard stale responses: if the active annotator changed while this
+          // request was in flight, these results belong to a page the user is no
+          // longer viewing and must not be merged into the current list.
+          if (activeAnnotatorIdRef.current !== firedForAnnotatorId) return;
           setInteractions((prev) => (cursor ? [...prev, ...page.items] : page.items));
           setNextCursor(page.next_cursor);
         })
         .catch((err: unknown) => setError(String(err)))
-        .finally(() => setLoading(false));
+        .finally(() => {
+          if (activeAnnotatorIdRef.current === firedForAnnotatorId) setLoading(false);
+        });
     },
     [projectId, selectedId],
   );
