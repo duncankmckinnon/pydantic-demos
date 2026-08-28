@@ -6,3 +6,5 @@
 apps/*/.env
 docs/
 drugs.csv*
+**/node_modules
+**/dist

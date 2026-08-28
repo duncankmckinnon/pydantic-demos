@@ -67,6 +67,8 @@ services:
       context: .
       dockerfile: apps/annotation-studio/Dockerfile
     env_file: apps/annotation-studio/.env
+    environment:
+      ANNOTATION_STUDIO_DATABASE_PATH: /app/apps/annotation-studio/data/annotation_studio.sqlite3
     volumes:
       - annotation_studio_data:/app/apps/annotation-studio/data
     ports:
