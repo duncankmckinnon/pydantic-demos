@@ -42,3 +42,95 @@ body {
 .error {
   color: #d9534f;
 }
+
+.project-editor {
+  border: 1px solid #8884;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.project-editor textarea,
+.project-editor input,
+.label-row input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 0.5rem;
+}
+
+.label-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.25rem;
+}
+
+.interaction-row {
+  border: 1px solid #8884;
+  border-radius: 8px;
+  margin-bottom: 0.75rem;
+}
+
+.interaction-summary {
+  display: flex;
+  gap: 1rem;
+  width: 100%;
+  padding: 0.75rem 1rem;
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.interaction-summary .preview {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.label-badge {
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: #8882;
+  font-size: 0.85em;
+}
+
+.interaction-detail {
+  padding: 0 1rem 1rem;
+}
+
+.full-conversation {
+  background: #8881;
+  border-radius: 6px;
+  padding: 0.75rem;
+  margin: 0.5rem 0;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.message pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.label-picker {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+}
+
+.label-picker button.selected {
+  background: #4a90d9;
+  color: white;
+}
+
+.writeback-warning {
+  color: #b8860b;
+}
+
+.writeback-ok {
+  color: #2e7d32;
+  font-size: 0.9em;
+}
