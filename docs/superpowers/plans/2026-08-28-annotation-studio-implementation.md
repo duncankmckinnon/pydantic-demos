@@ -2,43 +2,63 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build `annotation-studio`, a new `apps/annotation-studio` FastAPI + React demo that lets a reviewer browse `rx-assistant` agent interactions pulled live from Logfire, grade each one against a per-project criteria block, and store the label + written justification in local SQLite.
+**Goal:** Build `annotation-studio`, a new `apps/annotation-studio` FastAPI + React demo that lets one or more named reviewers browse `rx-assistant` agent interactions pulled live from Logfire, grade each one against a per-project criteria block, and store the label + written justification in local SQLite — with each grade also appended, best-effort, as a child log entry on the original Logfire trace.
 
-**Architecture:** A FastAPI backend (`src/annotation_studio/`) exposes `/api/*` JSON routes backed by stdlib `sqlite3` (projects/labels/annotations) and `logfire.experimental.query_client.AsyncLogfireQueryClient` (read-only interaction data from `rx-assistant-demo`). A React + TypeScript + Vite SPA (`frontend/`) consumes that API and is built to static files the backend serves. This is the first demo with a JS build step — a deliberate deviation, justified in the spec.
+**Architecture:** A FastAPI backend (`src/annotation_studio/`) exposes `/api/*` JSON routes backed by stdlib `sqlite3` (projects/labels/annotators/annotations) and `logfire.experimental.query_client.AsyncLogfireQueryClient` (read-only interaction data from `rx-assistant-demo`, with exclusive keyset pagination). A separate, token-scoped `logfire.configure(local=True, ...)` client appends each saved grade as a child log entry on the source trace — append-only, best-effort, never blocking or discarding the locally saved grade. A React + TypeScript + Vite SPA (`frontend/`) consumes the API, gated on a locally-selected named annotator profile, and is built to static files the backend serves.
 
-**Tech Stack:** Python 3.11, FastAPI, stdlib `sqlite3`, `logfire` (query client only, no agent), `demo_core`; React 18, TypeScript, Vite, React Router, `react-markdown`.
+**Tech Stack:** Python 3.11, FastAPI, stdlib `sqlite3`, `logfire` (query client + a second local write client, no agent), `demo_core`, `anyio`; React 18, TypeScript, Vite, React Router, `react-markdown`.
 
 **Spec:** [docs/superpowers/specs/2026-08-28-annotation-studio-design.md](../specs/2026-08-28-annotation-studio-design.md)
 
-> **Revision notice:** The original detailed plan is preserved below for implementation
-> context. The authoritative replacement tasks are in the Approved Revision Addendum at the
-> end; they incorporate annotator profiles, stable labels, atomic updates, keyset pagination,
-> and append-only Logfire write-back.
-
 ## Global Constraints
 
-- No auth anywhere (repo-wide convention — local-only).
-- **No write-back onto the source `rx-assistant-demo` trace.** Annotations live only in this app's own SQLite (see spec's "Out of Scope").
-- **No integration with Logfire's native annotation queue** — gated feature, no public API. This app is its own system of record.
+- No auth; annotator profiles are local named identities, not real authentication.
 - Only `rx-assistant-demo`'s trace shape is in scope for v1 — one fixed seeded project.
-- `top_level_agent_name` is interpolated directly into a SQL string sent to Logfire's query engine (no parameter binding available on `query_json_rows`) — it MUST be validated against `^[A-Za-z0-9_]+$` on every write path before use.
-- Backend tests never call the real Logfire query API — the query function is always monkeypatched.
-- **Do not add `tests/__init__.py`** to `apps/annotation-studio/tests/` — see `add-demo` skill's "Common Mistakes."
-- Frontend has no unit-test suite in v1 (per spec's Testing section) — `npm run build` succeeding (TypeScript typecheck + Vite bundle) is each frontend task's correctness gate, not a red/green test cycle.
-- Every `apps/annotation-studio/.env` (gitignored) and `.env.example` follow the repo's per-app credential convention (`AGENTS.md`).
+- **No integration with Logfire's native annotation queue** — gated feature, no public API.
+  This app's SQLite remains the system of record; write-back (below) is a one-way export to
+  the source trace, not a sync with that queue.
+- SQLite is authoritative; Logfire write-back is append-only and best-effort — a failed
+  write-back never blocks or discards a locally saved grade (see Task 5).
+- Use distinct `LOGFIRE_TOKEN`, `RX_ASSISTANT_LOGFIRE_READ_TOKEN`, and `RX_ASSISTANT_LOGFIRE_WRITE_TOKEN` values.
+- Configure the writer with `logfire.configure(local=True, token=write_token, service_name="annotation-studio-writeback")`; never replace global app telemetry configuration.
+- Validate agent names against `^[A-Za-z0-9_]+$`, trace IDs against `^[0-9a-f]{32}$`, and span
+  IDs against `^[0-9a-f]{16}$` before storage, SQL interpolation, or traceparent construction.
+- When attaching write-back context to a remote trace, pass Logfire's own
+  `TraceContextTextMapPropagator()` explicitly to `logfire.attach_context()` — its default
+  global text-map propagator can be guard-wrapped depending on `distributed_tracing` config
+  and silently no-op the extraction, making the write-back an orphan log instead of a child of
+  the source span. (Verified against the installed `logfire` package: its own
+  `logfire.experimental.annotations.raw_annotate_span` does exactly this for the same reason.)
+- Mirror `logfire.experimental.annotations`' attribute conventions (`logfire.feedback.name`,
+  `logfire.feedback.comment`) in the writer's own attributes so Logfire's UI recognizes these
+  as feedback, not generic child spans. Its `record_feedback()` helper can't be called
+  directly — it always writes through the global Logfire instance, and this app needs a
+  separately-token-scoped `local=True` client — so the convention is replicated against the
+  writer's own client instead of importing the helper.
+- The writer's `force_flush()` blocks for up to 3 seconds; run it off the event loop with
+  `anyio.to_thread.run_sync` in the route handler so one slow flush can't stall every other
+  concurrent request in this single-process demo.
+- Tests never call real Logfire APIs and must not add `tests/__init__.py`.
+- Project updates (criteria, agent name, labels) are one atomic transaction; label IDs remain
+  stable across renames/reorders; an annotation's label must belong to its own project.
+- Pagination is exclusive keyset pagination over `(start_timestamp, span_id)`.
+- Frontend correctness gates are `npm run build` and manual browser verification — no
+  component-level test suite for v1 given the small surface area.
 
-## Corrections to the Approved Spec
+## Design Note: Input/Output Extraction Direction
 
-Two issues surfaced while grounding this plan in a real `invoke_agent rx_assistant_agent` span pulled live from `rx-assistant-demo` (trace `01a045b8d6d40acd6c98ee00f1a3fe93`). Both are folded into the tasks below; flagging them here since they change behavior described in the "Approved" spec document itself:
-
-1. **Input-extraction rule was backwards.** The spec says "Input = the text content of the last `role: user` message with index `< new_message_index`." That finds the *previous* turn's user message, not the current one — `new_message_index` marks where this turn's *new* messages begin, and the real span confirms the current turn's question sits at `all_messages[new_message_index]`, not before it. This plan's `parse_interaction` (Task 3) uses `>= new_message_index` for both input and output, matching the observed data (verified: index 38 = `"What about major depressive disorder?"`, the actual question this span answers).
-2. **`top_level_agent_name` had no way to actually be edited.** The spec's Logfire Integration section says it's "editable through this app's own UI" and requires validation on save, but neither the API list nor the Frontend section include a control for it — only `criteria_text` and labels are wired up. Task 5 adds `top_level_agent_name` to `PUT /api/projects/{id}` (validated, 400 on reject) and Task 9 adds an input field for it next to the criteria editor, so the field the spec itself says needs an edit-and-validate path actually has one.
-
-A third small gap: the spec's data model has an `annotator` column but no UI field for it anywhere in the Frontend section, and `ANNOTATION_STUDIO_DEFAULT_ANNOTATOR` has no stated wiring. Resolved by having the backend fill `annotator` from `AppSettings.default_annotator` server-side on every annotation upsert — no annotator input in the UI, no new API surface.
+`parse_interaction` (Task 3) determines a turn's input/output from `pydantic_ai.all_messages`
+using `new_message_index` as a **lower bound** (`>= new_message_index`), not an upper one —
+`new_message_index` marks where *this turn's new messages begin*, so the turn's own question
+sits at `all_messages[new_message_index]`, not before it. This was verified against a real
+`invoke_agent rx_assistant_agent` span pulled live from `rx-assistant-demo` during design
+(trace `01a045b8d6d40acd6c98ee00f1a3fe93`): index 38 held `"What about major depressive
+disorder?"`, the actual question that span answers. The fixture in Task 3 is that real span's
+message shape, trimmed for a self-contained test.
 
 ---
 
-### Task 1: Workspace scaffold — pyproject, env, settings
+### Task 1: Package and settings
 
 **Files:**
 - Create: `apps/annotation-studio/pyproject.toml`
@@ -49,9 +69,12 @@ A third small gap: the spec's data model has an `annotator` column but no UI fie
 - Test: `apps/annotation-studio/tests/test_settings.py`
 
 **Interfaces:**
-- Produces: `annotation_studio.settings.SourceSettings` (fields: `read_token: str`, `top_level_agent_name: str = "rx_assistant_agent"`) and `annotation_studio.settings.AppSettings` (fields: `database_path: str`, `default_annotator: str`) — every later task's settings usage.
+- Produces: `annotation_studio.settings.SourceSettings` (fields: `read_token: str`,
+  `write_token: str`, `top_level_agent_name: str = "rx_assistant_agent"`) and
+  `annotation_studio.settings.AppSettings` (field: `database_path: str`) — every later task's
+  settings usage.
 
-- [ ] **Step 1: Create the package directory and `pyproject.toml`**
+- [ ] **Step 1: Create `pyproject.toml`**
 
 ```toml
 [project]
@@ -77,6 +100,10 @@ build-backend = "hatchling.build"
 packages = ["src/annotation_studio"]
 ```
 
+No new dependency is needed for `anyio` (pulled in transitively by `fastapi`/`starlette`) or
+`opentelemetry.trace` (pulled in transitively by `logfire`) — both are imported directly in
+later tasks but already resolve through existing dependencies.
+
 - [ ] **Step 2: Create `.env.example`**
 
 ```
@@ -89,8 +116,11 @@ LOGFIRE_TOKEN=
 # rx-assistant's own LOGFIRE_TOKEN (apps/rx-assistant/.env is not shared).
 RX_ASSISTANT_LOGFIRE_READ_TOKEN=
 
+# Append-only annotation events sent to the rx-assistant Logfire project. This is
+# distinct from both the read token above and Annotation Studio's LOGFIRE_TOKEN.
+RX_ASSISTANT_LOGFIRE_WRITE_TOKEN=
+
 ANNOTATION_STUDIO_DATABASE_PATH=data/annotation_studio.sqlite3
-ANNOTATION_STUDIO_DEFAULT_ANNOTATOR=
 ```
 
 - [ ] **Step 3: Create `src/annotation_studio/__init__.py`**
@@ -119,43 +149,42 @@ from pydantic import ValidationError
 from annotation_studio.settings import AppSettings, SourceSettings
 
 
-def test_source_settings_reads_read_token(monkeypatch) -> None:
+def test_source_settings_reads_separate_tokens(monkeypatch) -> None:
     monkeypatch.setenv("RX_ASSISTANT_LOGFIRE_READ_TOKEN", "pylf_read_test")
+    monkeypatch.setenv("RX_ASSISTANT_LOGFIRE_WRITE_TOKEN", "pylf_write_test")
 
     settings = SourceSettings()
 
     assert settings.read_token == "pylf_read_test"
+    assert settings.write_token == "pylf_write_test"
     assert settings.top_level_agent_name == "rx_assistant_agent"
 
 
-def test_source_settings_requires_read_token(monkeypatch) -> None:
-    monkeypatch.delenv("RX_ASSISTANT_LOGFIRE_READ_TOKEN", raising=False)
+@pytest.mark.parametrize("missing_var", ["RX_ASSISTANT_LOGFIRE_READ_TOKEN", "RX_ASSISTANT_LOGFIRE_WRITE_TOKEN"])
+def test_source_settings_requires_both_tokens(monkeypatch, missing_var: str) -> None:
+    monkeypatch.setenv("RX_ASSISTANT_LOGFIRE_READ_TOKEN", "read")
+    monkeypatch.setenv("RX_ASSISTANT_LOGFIRE_WRITE_TOKEN", "write")
+    monkeypatch.delenv(missing_var, raising=False)
 
     with pytest.raises(ValidationError):
         SourceSettings()
 
 
-def test_app_settings_defaults(monkeypatch) -> None:
+def test_app_settings_default(monkeypatch) -> None:
     monkeypatch.delenv("ANNOTATION_STUDIO_DATABASE_PATH", raising=False)
-    monkeypatch.delenv("ANNOTATION_STUDIO_DEFAULT_ANNOTATOR", raising=False)
 
-    settings = AppSettings()
-
-    assert settings.database_path == "data/annotation_studio.sqlite3"
-    assert settings.default_annotator == ""
+    assert AppSettings().database_path == "data/annotation_studio.sqlite3"
 
 
-def test_app_settings_reads_overrides(monkeypatch) -> None:
+def test_app_settings_reads_override(monkeypatch) -> None:
     monkeypatch.setenv("ANNOTATION_STUDIO_DATABASE_PATH", "/tmp/x.sqlite3")
-    monkeypatch.setenv("ANNOTATION_STUDIO_DEFAULT_ANNOTATOR", "duncan")
 
-    settings = AppSettings()
-
-    assert settings.database_path == "/tmp/x.sqlite3"
-    assert settings.default_annotator == "duncan"
+    assert AppSettings().database_path == "/tmp/x.sqlite3"
 ```
 
-- [ ] **Step 5: Create `tests/conftest.py`** (dummy env vars so settings can construct without a real `.env`; a temp-file database path so later tasks' module-level `app = create_annotation_studio_app()` never touches a real file in the repo)
+- [ ] **Step 5: Create `tests/conftest.py`** (dummy env vars so settings can construct without
+  a real `.env`; a temp-file database path so the module-level `app = create_annotation_studio_app()`
+  built in Task 5 never touches a real file in the repo)
 
 ```python
 import os
@@ -169,6 +198,7 @@ os.close(_db_fd)
 os.environ["LOGFIRE_TOKEN"] = "test-token"
 os.environ["LOGFIRE_SEND_TO_LOGFIRE"] = "false"
 os.environ["RX_ASSISTANT_LOGFIRE_READ_TOKEN"] = "test-read-token"
+os.environ["RX_ASSISTANT_LOGFIRE_WRITE_TOKEN"] = "test-write-token"
 os.environ["ANNOTATION_STUDIO_DATABASE_PATH"] = _db_path
 
 import logfire  # noqa: E402
@@ -188,23 +218,23 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class SourceSettings(BaseSettings):
-    """Read-only access to rx-assistant's Logfire project."""
+    """Read spans and append annotation events in rx-assistant's Logfire project."""
 
     model_config = SettingsConfigDict(extra="ignore", populate_by_name=True)
 
     read_token: str = Field(validation_alias="RX_ASSISTANT_LOGFIRE_READ_TOKEN")
+    write_token: str = Field(validation_alias="RX_ASSISTANT_LOGFIRE_WRITE_TOKEN")
     top_level_agent_name: str = Field(default="rx_assistant_agent")
 
 
 class AppSettings(BaseSettings):
-    """This app's own local settings — its SQLite database and default annotator name."""
+    """This app's own local settings — its SQLite database."""
 
     model_config = SettingsConfigDict(extra="ignore", populate_by_name=True)
 
     database_path: str = Field(
         default="data/annotation_studio.sqlite3", validation_alias="ANNOTATION_STUDIO_DATABASE_PATH"
     )
-    default_annotator: str = Field(default="", validation_alias="ANNOTATION_STUDIO_DEFAULT_ANNOTATOR")
 ```
 
 - [ ] **Step 7: Register the workspace member and run the tests**
@@ -236,7 +266,16 @@ git commit -m "annotation-studio: scaffold workspace member and settings"
 - Test: `apps/annotation-studio/tests/test_db.py`
 
 **Interfaces:**
-- Produces: `db.get_connection(database_path: str) -> sqlite3.Connection`, `db.init_db(conn)`, `db.seed_default_project(conn, top_level_agent_name: str) -> None`, `db.list_projects(conn) -> list[dict]`, `db.get_project(conn, project_id: int) -> dict | None`, `db.update_project_criteria(conn, project_id, criteria_text: str) -> None`, `db.update_project_top_level_agent_name(conn, project_id, name: str) -> None`, `db.list_labels(conn, project_id) -> list[dict]`, `db.update_project_labels(conn, project_id, names: list[str]) -> list[dict]` (raises `ValueError` if removing a label still referenced by an annotation), `db.get_annotation(conn, project_id, trace_id, span_id) -> dict | None`, `db.upsert_annotation(conn, project_id, trace_id, span_id, label_id, description, annotator) -> dict`. Every project/label/annotation dict has plain JSON-serializable values (str/int/None). Used directly by `main.py` and `routes.py` (Tasks 5–6).
+- Produces: `db.get_connection(database_path) -> sqlite3.Connection`, `db.init_db(conn)`,
+  `db.seed_default_project(conn, top_level_agent_name)`, `db.list_projects(conn) -> list[dict]`,
+  `db.get_project(conn, project_id) -> dict | None`, `db.list_labels(conn, project_id) -> list[dict]`,
+  `db.get_label(conn, label_id) -> dict | None`, `db.LabelInput(id, name)`, `db.ValidationError`,
+  `db.ConflictError`, `db.update_project(conn, project_id, criteria_text, top_level_agent_name, labels) -> dict`,
+  `db.create_annotator`, `db.rename_annotator`, `db.delete_annotator`, `db.list_annotators`,
+  `db.get_annotator`, `db.get_annotation(conn, project_id, trace_id, span_id, annotator_id) -> dict | None`,
+  `db.upsert_annotation`, `db.mark_writeback_written`, `db.mark_writeback_failed`. Every
+  returned dict has plain JSON-serializable values. Consumed directly by `main.py`/`routes.py`
+  (Task 5) and, via `validate_agent_name`, imports from `logfire_client` (Task 3).
 
 - [ ] **Step 1: Write the failing tests** — `apps/annotation-studio/tests/test_db.py`
 
@@ -256,103 +295,248 @@ def _fresh_conn() -> sqlite3.Connection:
     return conn
 
 
+def _seeded_project(conn: sqlite3.Connection) -> dict:
+    db.seed_default_project(conn, "rx_assistant_agent")
+    return db.list_projects(conn)[0]
+
+
+def _label_id(conn: sqlite3.Connection, project_id: int, name: str) -> int:
+    return next(label["id"] for label in db.list_labels(conn, project_id) if label["name"] == name)
+
+
 def test_seed_default_project_creates_project_and_starter_labels() -> None:
     conn = _fresh_conn()
 
-    db.seed_default_project(conn, "rx_assistant_agent")
+    project = _seeded_project(conn)
 
-    projects = db.list_projects(conn)
-    assert len(projects) == 1
-    assert projects[0]["name"] == "rx-assistant"
-    assert projects[0]["top_level_agent_name"] == "rx_assistant_agent"
-    labels = db.list_labels(conn, projects[0]["id"])
+    assert project["name"] == "rx-assistant"
+    assert project["top_level_agent_name"] == "rx_assistant_agent"
+    labels = db.list_labels(conn, project["id"])
     assert [label["name"] for label in labels] == ["Pass", "Neutral", "Fail"]
 
 
 def test_seed_default_project_is_idempotent() -> None:
     conn = _fresh_conn()
-
     db.seed_default_project(conn, "rx_assistant_agent")
+
     db.seed_default_project(conn, "rx_assistant_agent")
 
     assert len(db.list_projects(conn)) == 1
 
 
-def test_update_project_criteria_persists_text() -> None:
+def test_update_project_updates_criteria_only() -> None:
     conn = _fresh_conn()
-    db.seed_default_project(conn, "rx_assistant_agent")
-    project_id = db.list_projects(conn)[0]["id"]
+    project = _seeded_project(conn)
 
-    db.update_project_criteria(conn, project_id, "Be strict about hallucinations.")
+    updated = db.update_project(conn, project["id"], "Be strict.", None, None)
 
-    assert db.get_project(conn, project_id)["criteria_text"] == "Be strict about hallucinations."
+    assert updated["criteria_text"] == "Be strict."
+    assert updated["top_level_agent_name"] == "rx_assistant_agent"
 
 
-def test_update_project_top_level_agent_name_persists() -> None:
+def test_update_project_rejects_invalid_agent_name_and_changes_nothing() -> None:
     conn = _fresh_conn()
-    db.seed_default_project(conn, "rx_assistant_agent")
-    project_id = db.list_projects(conn)[0]["id"]
-
-    db.update_project_top_level_agent_name(conn, project_id, "rx_assistant_agent_v2")
-
-    assert db.get_project(conn, project_id)["top_level_agent_name"] == "rx_assistant_agent_v2"
-
-
-def test_update_project_labels_renames_reorders_and_adds() -> None:
-    conn = _fresh_conn()
-    db.seed_default_project(conn, "rx_assistant_agent")
-    project_id = db.list_projects(conn)[0]["id"]
-
-    labels = db.update_project_labels(conn, project_id, ["Fail", "Pass", "Hallucination"])
-
-    assert [label["name"] for label in labels] == ["Fail", "Pass", "Hallucination"]
-
-
-def test_update_project_labels_removing_an_unused_label_succeeds() -> None:
-    conn = _fresh_conn()
-    db.seed_default_project(conn, "rx_assistant_agent")
-    project_id = db.list_projects(conn)[0]["id"]
-
-    labels = db.update_project_labels(conn, project_id, ["Pass", "Fail"])
-
-    assert [label["name"] for label in labels] == ["Pass", "Fail"]
-
-
-def test_update_project_labels_removing_a_label_used_by_an_annotation_raises() -> None:
-    conn = _fresh_conn()
-    db.seed_default_project(conn, "rx_assistant_agent")
-    project_id = db.list_projects(conn)[0]["id"]
-    neutral_id = next(
-        label["id"] for label in db.list_labels(conn, project_id) if label["name"] == "Neutral"
-    )
-    db.upsert_annotation(conn, project_id, "trace-1", "span-1", neutral_id, "why", "duncan")
+    project = _seeded_project(conn)
 
     with pytest.raises(ValueError):
-        db.update_project_labels(conn, project_id, ["Pass", "Fail"])
+        db.update_project(conn, project["id"], "changed", "not valid; DROP TABLE", None)
 
-    # The whole update was rolled back, not just the removal.
-    assert [label["name"] for label in db.list_labels(conn, project_id)] == ["Pass", "Neutral", "Fail"]
+    assert db.get_project(conn, project["id"])["criteria_text"] == ""
 
 
-def test_upsert_annotation_inserts_then_updates_same_row() -> None:
+def test_update_project_labels_rename_reorder_preserves_ids() -> None:
     conn = _fresh_conn()
-    db.seed_default_project(conn, "rx_assistant_agent")
-    project_id = db.list_projects(conn)[0]["id"]
-    pass_id = next(label["id"] for label in db.list_labels(conn, project_id) if label["name"] == "Pass")
+    project = _seeded_project(conn)
+    pass_id = _label_id(conn, project["id"], "Pass")
 
-    first = db.upsert_annotation(conn, project_id, "trace-1", "span-1", pass_id, "good", "duncan")
-    second = db.upsert_annotation(conn, project_id, "trace-1", "span-1", pass_id, "still good", "duncan")
+    updated = db.update_project(
+        conn, project["id"], None, None,
+        [db.LabelInput(None, "Fail"), db.LabelInput(pass_id, "Approved")],
+    )
 
-    assert first["id"] == second["id"]
-    assert second["description"] == "still good"
+    assert [label["name"] for label in updated["labels"]] == ["Fail", "Approved"]
+    assert next(l["id"] for l in updated["labels"] if l["name"] == "Approved") == pass_id
 
 
-def test_get_annotation_returns_none_when_not_graded() -> None:
+def test_update_project_rejects_label_id_from_another_project() -> None:
     conn = _fresh_conn()
-    db.seed_default_project(conn, "rx_assistant_agent")
-    project_id = db.list_projects(conn)[0]["id"]
+    project = _seeded_project(conn)
+    now = "2026-01-01T00:00:00"
+    conn.execute(
+        "INSERT INTO projects (name, top_level_agent_name, criteria_text, created_at, updated_at) "
+        "VALUES ('other', 'other_agent', '', ?, ?)",
+        (now, now),
+    )
+    conn.commit()
+    other_project_id = conn.execute("SELECT id FROM projects WHERE name = 'other'").fetchone()["id"]
+    conn.execute(
+        "INSERT INTO labels (project_id, name, sort_order) VALUES (?, 'Foreign', 0)", (other_project_id,)
+    )
+    conn.commit()
+    foreign_label_id = conn.execute("SELECT id FROM labels WHERE name = 'Foreign'").fetchone()["id"]
 
-    assert db.get_annotation(conn, project_id, "trace-x", "span-x") is None
+    with pytest.raises(ValueError):
+        db.update_project(conn, project["id"], None, None, [db.LabelInput(foreign_label_id, "Hijacked")])
+
+
+def test_update_project_combined_change_rolls_back_when_label_removal_conflicts() -> None:
+    conn = _fresh_conn()
+    project = _seeded_project(conn)
+    annotator = db.create_annotator(conn, "Ada")
+    neutral_id = _label_id(conn, project["id"], "Neutral")
+    db.upsert_annotation(conn, project["id"], "trace-1", "span-1", annotator["id"], neutral_id, "why")
+
+    with pytest.raises(db.ConflictError):
+        db.update_project(
+            conn, project["id"], "changed criteria", None,
+            [db.LabelInput(_label_id(conn, project["id"], "Pass"), "Pass"),
+             db.LabelInput(_label_id(conn, project["id"], "Fail"), "Fail")],
+        )
+
+    reloaded = db.get_project(conn, project["id"])
+    assert reloaded["criteria_text"] == ""
+    assert [l["name"] for l in db.list_labels(conn, project["id"])] == ["Pass", "Neutral", "Fail"]
+
+
+def test_create_annotator_and_reject_case_insensitive_duplicate() -> None:
+    conn = _fresh_conn()
+    db.create_annotator(conn, "Ada")
+
+    with pytest.raises(db.ConflictError):
+        db.create_annotator(conn, "ada")
+
+
+def test_rename_annotator_preserves_id() -> None:
+    conn = _fresh_conn()
+    ada = db.create_annotator(conn, "Ada")
+
+    renamed = db.rename_annotator(conn, ada["id"], "Ada Lovelace")
+
+    assert renamed["id"] == ada["id"]
+    assert renamed["name"] == "Ada Lovelace"
+
+
+def test_delete_unused_annotator_succeeds() -> None:
+    conn = _fresh_conn()
+    ada = db.create_annotator(conn, "Ada")
+
+    db.delete_annotator(conn, ada["id"])
+
+    assert db.list_annotators(conn) == []
+
+
+def test_delete_referenced_annotator_raises_conflict() -> None:
+    conn = _fresh_conn()
+    project = _seeded_project(conn)
+    ada = db.create_annotator(conn, "Ada")
+    pass_id = _label_id(conn, project["id"], "Pass")
+    db.upsert_annotation(conn, project["id"], "trace-1", "span-1", ada["id"], pass_id, "ok")
+
+    with pytest.raises(db.ConflictError):
+        db.delete_annotator(conn, ada["id"])
+
+
+def test_two_annotators_grade_same_interaction_independently() -> None:
+    conn = _fresh_conn()
+    project = _seeded_project(conn)
+    pass_id = _label_id(conn, project["id"], "Pass")
+    ada = db.create_annotator(conn, "Ada")
+    grace = db.create_annotator(conn, "Grace")
+
+    a = db.upsert_annotation(conn, project["id"], "trace-1", "span-1", ada["id"], pass_id, "good")
+    b = db.upsert_annotation(conn, project["id"], "trace-1", "span-1", grace["id"], pass_id, "also good")
+
+    assert a["id"] != b["id"]
+    assert db.get_annotation(conn, project["id"], "trace-1", "span-1", grace["id"])["id"] == b["id"]
+
+
+def test_upsert_annotation_second_save_increments_revision_and_resets_writeback() -> None:
+    conn = _fresh_conn()
+    project = _seeded_project(conn)
+    pass_id = _label_id(conn, project["id"], "Pass")
+    ada = db.create_annotator(conn, "Ada")
+    first = db.upsert_annotation(conn, project["id"], "trace-1", "span-1", ada["id"], pass_id, "one")
+    db.mark_writeback_written(conn, first["id"], first["revision"])
+
+    second = db.upsert_annotation(conn, project["id"], "trace-1", "span-1", ada["id"], pass_id, "two")
+
+    assert second["revision"] == 2
+    assert second["writeback_status"] == "pending"
+    assert second["written_at"] is None
+
+
+def test_upsert_annotation_rejects_unknown_annotator() -> None:
+    conn = _fresh_conn()
+    project = _seeded_project(conn)
+    pass_id = _label_id(conn, project["id"], "Pass")
+
+    with pytest.raises(ValueError):
+        db.upsert_annotation(conn, project["id"], "trace-1", "span-1", 999, pass_id, "x")
+
+
+def test_upsert_annotation_rejects_label_from_another_project() -> None:
+    conn = _fresh_conn()
+    project = _seeded_project(conn)
+    ada = db.create_annotator(conn, "Ada")
+    now = "2026-01-01T00:00:00"
+    conn.execute(
+        "INSERT INTO projects (name, top_level_agent_name, criteria_text, created_at, updated_at) "
+        "VALUES ('other', 'other_agent', '', ?, ?)",
+        (now, now),
+    )
+    conn.commit()
+    other_project_id = conn.execute("SELECT id FROM projects WHERE name = 'other'").fetchone()["id"]
+    conn.execute("INSERT INTO labels (project_id, name, sort_order) VALUES (?, 'Foreign', 0)", (other_project_id,))
+    conn.commit()
+    foreign_label_id = conn.execute("SELECT id FROM labels WHERE name = 'Foreign'").fetchone()["id"]
+
+    with pytest.raises(ValueError):
+        db.upsert_annotation(conn, project["id"], "trace-1", "span-1", ada["id"], foreign_label_id, "x")
+
+
+def test_mark_writeback_written_sets_status_and_written_at() -> None:
+    conn = _fresh_conn()
+    project = _seeded_project(conn)
+    pass_id = _label_id(conn, project["id"], "Pass")
+    ada = db.create_annotator(conn, "Ada")
+    annotation = db.upsert_annotation(conn, project["id"], "trace-1", "span-1", ada["id"], pass_id, "ok")
+
+    db.mark_writeback_written(conn, annotation["id"], annotation["revision"])
+
+    reloaded = db.get_annotation(conn, project["id"], "trace-1", "span-1", ada["id"])
+    assert reloaded["writeback_status"] == "written"
+    assert reloaded["written_at"] is not None
+
+
+def test_mark_writeback_failed_sets_status_and_truncated_error() -> None:
+    conn = _fresh_conn()
+    project = _seeded_project(conn)
+    pass_id = _label_id(conn, project["id"], "Pass")
+    ada = db.create_annotator(conn, "Ada")
+    annotation = db.upsert_annotation(conn, project["id"], "trace-1", "span-1", ada["id"], pass_id, "ok")
+
+    db.mark_writeback_failed(conn, annotation["id"], annotation["revision"], "x" * 600)
+
+    reloaded = db.get_annotation(conn, project["id"], "trace-1", "span-1", ada["id"])
+    assert reloaded["writeback_status"] == "failed"
+    assert len(reloaded["writeback_error"]) == 500
+
+
+def test_mark_writeback_written_is_a_noop_for_a_stale_revision() -> None:
+    conn = _fresh_conn()
+    project = _seeded_project(conn)
+    pass_id = _label_id(conn, project["id"], "Pass")
+    ada = db.create_annotator(conn, "Ada")
+    first = db.upsert_annotation(conn, project["id"], "trace-1", "span-1", ada["id"], pass_id, "one")
+    db.upsert_annotation(conn, project["id"], "trace-1", "span-1", ada["id"], pass_id, "two")
+
+    # A slow write-back for revision 1 completes after revision 2 was already saved locally —
+    # it must not mark revision 2 "written".
+    db.mark_writeback_written(conn, first["id"], first["revision"])
+
+    reloaded = db.get_annotation(conn, project["id"], "trace-1", "span-1", ada["id"])
+    assert reloaded["revision"] == 2
+    assert reloaded["writeback_status"] == "pending"
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -367,8 +551,11 @@ Expected: FAIL/ERROR — `annotation_studio.db` doesn't exist yet.
 
 ```python
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+
+from annotation_studio.logfire_client import validate_agent_name
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -388,19 +575,44 @@ CREATE TABLE IF NOT EXISTS labels (
     UNIQUE(project_id, name)
 );
 
+CREATE TABLE IF NOT EXISTS annotators (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS annotations (
     id INTEGER PRIMARY KEY,
     project_id INTEGER NOT NULL REFERENCES projects(id),
     trace_id TEXT NOT NULL,
     span_id TEXT NOT NULL,
+    annotator_id INTEGER NOT NULL REFERENCES annotators(id),
     label_id INTEGER REFERENCES labels(id),
     description TEXT NOT NULL DEFAULT '',
-    annotator TEXT NOT NULL DEFAULT '',
+    revision INTEGER NOT NULL DEFAULT 1,
+    writeback_status TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'written' | 'failed'
+    writeback_error TEXT,
+    written_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    UNIQUE(project_id, trace_id, span_id)
+    UNIQUE(project_id, trace_id, span_id, annotator_id)
 );
 """
+
+
+class ValidationError(Exception):
+    """A caller-supplied value is invalid — maps to HTTP 400 in routes.py."""
+
+
+class ConflictError(Exception):
+    """The requested change conflicts with existing data — maps to HTTP 409 in routes.py."""
+
+
+@dataclass(frozen=True)
+class LabelInput:
+    id: int | None
+    name: str
 
 
 def get_connection(database_path: str) -> sqlite3.Connection:
@@ -454,24 +666,6 @@ def get_project(conn: sqlite3.Connection, project_id: int) -> dict | None:
     return _row_to_dict(row) if row else None
 
 
-def update_project_criteria(conn: sqlite3.Connection, project_id: int, criteria_text: str) -> None:
-    conn.execute(
-        "UPDATE projects SET criteria_text = ?, updated_at = ? WHERE id = ?",
-        (criteria_text, _now(), project_id),
-    )
-    conn.commit()
-
-
-def update_project_top_level_agent_name(
-    conn: sqlite3.Connection, project_id: int, top_level_agent_name: str
-) -> None:
-    conn.execute(
-        "UPDATE projects SET top_level_agent_name = ?, updated_at = ? WHERE id = ?",
-        (top_level_agent_name, _now(), project_id),
-    )
-    conn.commit()
-
-
 def list_labels(conn: sqlite3.Connection, project_id: int) -> list[dict]:
     rows = conn.execute(
         "SELECT * FROM labels WHERE project_id = ? ORDER BY sort_order", (project_id,)
@@ -479,46 +673,132 @@ def list_labels(conn: sqlite3.Connection, project_id: int) -> list[dict]:
     return [_row_to_dict(row) for row in rows]
 
 
-def update_project_labels(conn: sqlite3.Connection, project_id: int, names: list[str]) -> list[dict]:
-    """Replace the project's label set with `names`, in order. Existing labels matching a
-    name by exact string are kept (same id, so existing annotations stay valid) and just
-    re-ordered; new names are inserted; labels no longer present are deleted — but deleting
-    a label still referenced by an annotation violates the FK and raises ValueError, rolling
-    back the *entire* call (including any renames/reorders already applied in this batch),
-    so the frontend's "Save labels" is all-or-nothing."""
-    existing = {
-        row["name"]: row["id"]
-        for row in conn.execute(
-            "SELECT id, name FROM labels WHERE project_id = ?", (project_id,)
-        ).fetchall()
-    }
+def get_label(conn: sqlite3.Connection, label_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM labels WHERE id = ?", (label_id,)).fetchone()
+    return _row_to_dict(row) if row else None
 
-    for order, name in enumerate(names):
-        if name in existing:
-            conn.execute("UPDATE labels SET sort_order = ? WHERE id = ?", (order, existing[name]))
-        else:
+
+def update_project(
+    conn: sqlite3.Connection,
+    project_id: int,
+    criteria_text: str | None,
+    top_level_agent_name: str | None,
+    labels: list[LabelInput] | None,
+) -> dict:
+    """Apply every provided field in one transaction. A label id absent from this project, an
+    invalid agent name, or removing a label still referenced by an annotation rolls back the
+    *entire* call — including fields that would otherwise have succeeded — so the frontend's
+    single "Save" button is all-or-nothing."""
+    try:
+        if top_level_agent_name is not None:
+            validate_agent_name(top_level_agent_name)
             conn.execute(
-                "INSERT INTO labels (project_id, name, sort_order) VALUES (?, ?, ?)",
-                (project_id, name, order),
+                "UPDATE projects SET top_level_agent_name = ?, updated_at = ? WHERE id = ?",
+                (top_level_agent_name, _now(), project_id),
             )
 
-    for name in set(existing) - set(names):
-        try:
-            conn.execute("DELETE FROM labels WHERE id = ?", (existing[name],))
-        except sqlite3.IntegrityError:
-            conn.rollback()
-            raise ValueError(f"Cannot remove label {name!r}: it is used by an existing annotation")
+        if criteria_text is not None:
+            conn.execute(
+                "UPDATE projects SET criteria_text = ?, updated_at = ? WHERE id = ?",
+                (criteria_text, _now(), project_id),
+            )
+
+        if labels is not None:
+            existing_ids = {
+                row["id"]
+                for row in conn.execute(
+                    "SELECT id FROM labels WHERE project_id = ?", (project_id,)
+                ).fetchall()
+            }
+            keep_ids: set[int] = set()
+            for order, label in enumerate(labels):
+                if label.id is not None:
+                    if label.id not in existing_ids:
+                        raise ValidationError(f"Label {label.id} does not belong to this project")
+                    conn.execute(
+                        "UPDATE labels SET name = ?, sort_order = ? WHERE id = ?",
+                        (label.name, order, label.id),
+                    )
+                    keep_ids.add(label.id)
+                else:
+                    cursor = conn.execute(
+                        "INSERT INTO labels (project_id, name, sort_order) VALUES (?, ?, ?)",
+                        (project_id, label.name, order),
+                    )
+                    keep_ids.add(cursor.lastrowid)
+
+            for removed_id in existing_ids - keep_ids:
+                conn.execute("DELETE FROM labels WHERE id = ?", (removed_id,))
+    except sqlite3.IntegrityError as exc:
+        conn.rollback()
+        raise ConflictError("Cannot remove a label used by an existing annotation") from exc
+    except ValidationError:
+        conn.rollback()
+        raise
 
     conn.commit()
-    return list_labels(conn, project_id)
+    project = get_project(conn, project_id)
+    project["labels"] = list_labels(conn, project_id)
+    return project
+
+
+def create_annotator(conn: sqlite3.Connection, name: str) -> dict:
+    name = name.strip()
+    if not name:
+        raise ValidationError("Annotator name cannot be empty")
+    now = _now()
+    try:
+        cursor = conn.execute(
+            "INSERT INTO annotators (name, created_at, updated_at) VALUES (?, ?, ?)",
+            (name, now, now),
+        )
+    except sqlite3.IntegrityError:
+        raise ConflictError(f"Annotator name {name!r} is already taken")
+    conn.commit()
+    return get_annotator(conn, cursor.lastrowid)
+
+
+def rename_annotator(conn: sqlite3.Connection, annotator_id: int, name: str) -> dict:
+    name = name.strip()
+    if not name:
+        raise ValidationError("Annotator name cannot be empty")
+    try:
+        conn.execute(
+            "UPDATE annotators SET name = ?, updated_at = ? WHERE id = ?",
+            (name, _now(), annotator_id),
+        )
+    except sqlite3.IntegrityError:
+        raise ConflictError(f"Annotator name {name!r} is already taken")
+    conn.commit()
+    return get_annotator(conn, annotator_id)
+
+
+def delete_annotator(conn: sqlite3.Connection, annotator_id: int) -> None:
+    try:
+        conn.execute("DELETE FROM annotators WHERE id = ?", (annotator_id,))
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        raise ConflictError("Cannot remove an annotator with existing annotations")
+    conn.commit()
+
+
+def list_annotators(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute("SELECT * FROM annotators ORDER BY name COLLATE NOCASE").fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+def get_annotator(conn: sqlite3.Connection, annotator_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM annotators WHERE id = ?", (annotator_id,)).fetchone()
+    return _row_to_dict(row) if row else None
 
 
 def get_annotation(
-    conn: sqlite3.Connection, project_id: int, trace_id: str, span_id: str
+    conn: sqlite3.Connection, project_id: int, trace_id: str, span_id: str, annotator_id: int
 ) -> dict | None:
     row = conn.execute(
-        "SELECT * FROM annotations WHERE project_id = ? AND trace_id = ? AND span_id = ?",
-        (project_id, trace_id, span_id),
+        "SELECT * FROM annotations WHERE project_id = ? AND trace_id = ? AND span_id = ? "
+        "AND annotator_id = ?",
+        (project_id, trace_id, span_id, annotator_id),
     ).fetchone()
     return _row_to_dict(row) if row else None
 
@@ -528,27 +808,62 @@ def upsert_annotation(
     project_id: int,
     trace_id: str,
     span_id: str,
+    annotator_id: int,
     label_id: int | None,
     description: str,
-    annotator: str,
 ) -> dict:
+    if get_annotator(conn, annotator_id) is None:
+        raise ValidationError(f"Unknown annotator {annotator_id}")
+    if label_id is not None and conn.execute(
+        "SELECT 1 FROM labels WHERE id = ? AND project_id = ?", (label_id, project_id)
+    ).fetchone() is None:
+        raise ValidationError(f"Label {label_id} does not belong to this project")
+
     now = _now()
-    existing = get_annotation(conn, project_id, trace_id, span_id)
+    existing = get_annotation(conn, project_id, trace_id, span_id, annotator_id)
     if existing:
+        # Resets writeback_status/writeback_error/written_at — a new revision hasn't been
+        # written yet, so a stale 'written'/written_at from the previous revision would be
+        # misleading if the write-back for this one fails or is still in flight.
         conn.execute(
-            "UPDATE annotations SET label_id = ?, description = ?, annotator = ?, updated_at = ? "
-            "WHERE id = ?",
-            (label_id, description, annotator, now, existing["id"]),
+            "UPDATE annotations SET label_id = ?, description = ?, revision = revision + 1, "
+            "writeback_status = 'pending', writeback_error = NULL, written_at = NULL, "
+            "updated_at = ? WHERE id = ?",
+            (label_id, description, now, existing["id"]),
         )
     else:
         conn.execute(
-            "INSERT INTO annotations "
-            "(project_id, trace_id, span_id, label_id, description, annotator, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (project_id, trace_id, span_id, label_id, description, annotator, now, now),
+            "INSERT INTO annotations (project_id, trace_id, span_id, annotator_id, label_id, "
+            "description, revision, writeback_status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 1, 'pending', ?, ?)",
+            (project_id, trace_id, span_id, annotator_id, label_id, description, now, now),
         )
     conn.commit()
-    return get_annotation(conn, project_id, trace_id, span_id)
+    return get_annotation(conn, project_id, trace_id, span_id, annotator_id)
+
+
+def mark_writeback_written(conn: sqlite3.Connection, annotation_id: int, revision: int) -> None:
+    # revision in the WHERE clause: if the grade was re-saved (revision bumped) while a
+    # slow write-back for the *previous* revision was still in flight, that stale call must
+    # not mark the newer revision "written" — it simply matches no row and no-ops.
+    now = _now()
+    conn.execute(
+        "UPDATE annotations SET writeback_status = 'written', writeback_error = NULL, "
+        "written_at = ?, updated_at = ? WHERE id = ? AND revision = ?",
+        (now, now, annotation_id, revision),
+    )
+    conn.commit()
+
+
+def mark_writeback_failed(
+    conn: sqlite3.Connection, annotation_id: int, revision: int, error: str
+) -> None:
+    conn.execute(
+        "UPDATE annotations SET writeback_status = 'failed', writeback_error = ?, "
+        "updated_at = ? WHERE id = ? AND revision = ?",
+        (error[:500], _now(), annotation_id, revision),
+    )
+    conn.commit()
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
@@ -557,7 +872,7 @@ def upsert_annotation(
 uv run pytest apps/annotation-studio/tests/test_db.py -v
 ```
 
-Expected: 8 passed.
+Expected: 18 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -568,9 +883,10 @@ git commit -m "annotation-studio: add SQLite schema and CRUD layer"
 
 ---
 
-### Task 3: Message-parsing logic (`parse_interaction`)
+### Task 3: Message parsing and keyset Logfire pagination
 
-Pure logic, no network — extracts a turn's input/output from one Logfire span row's `attributes`. Grounded in a real `invoke_agent rx_assistant_agent` span pulled from `rx-assistant-demo` (trace `01a045b8d6d40acd6c98ee00f1a3fe93`) during planning; the fixture below is that real span's message shape, trimmed to 6 messages for a self-contained test.
+Grounded in a real `invoke_agent rx_assistant_agent` span pulled from `rx-assistant-demo`
+(trace `01a045b8d6d40acd6c98ee00f1a3fe93`) during design — see the Design Note above.
 
 **Files:**
 - Create: `apps/annotation-studio/src/annotation_studio/logfire_client.py`
@@ -580,11 +896,22 @@ Pure logic, no network — extracts a turn's input/output from one Logfire span 
 - Test: `apps/annotation-studio/tests/test_logfire_client.py`
 
 **Interfaces:**
-- Produces: `logfire_client.AGENT_NAME_PATTERN`, `logfire_client.validate_agent_name(name: str) -> None` (raises `ValueError`), `logfire_client.Interaction` dataclass (`trace_id: str, span_id: str, start_timestamp: str, input_text: str, output_text: str, full_conversation: list[dict], trace_url: str, raw_attributes: dict | None = None`), `logfire_client.parse_interaction(row: dict, trace_url: str) -> Interaction`. Consumed by Task 4's `fetch_project_interactions` and Task 6's routes.
+- Produces: `AGENT_NAME_PATTERN`, `validate_agent_name(name: str) -> None` (raises `ValueError`),
+  `validate_trace_and_span(trace_id: str, span_id: str) -> None` (raises `ValueError`; reused by
+  Task 4's writer), `Cursor(start_timestamp: str, span_id: str)` frozen dataclass,
+  `encode_cursor(cursor: Cursor) -> str`, `decode_cursor(value: str) -> Cursor` (raises
+  `ValueError`), `Interaction` dataclass (`trace_id, span_id, start_timestamp, input_text,
+  output_text, full_conversation: list[dict], trace_url, raw_attributes: dict | None = None`),
+  `parse_interaction(row: dict, trace_url: str) -> Interaction`, `build_trace_link(base_url,
+  organization_name, project_name, trace_id) -> str`, `async fetch_project_interactions(
+  read_token, top_level_agent_name, cursor: str | None, limit: int) -> tuple[list[Interaction],
+  str | None]`. Consumed by `db.py` (Task 2, `validate_agent_name`), `logfire_writer.py`
+  (Task 4, `validate_trace_and_span`), and `routes.py` (Task 5).
 
 - [ ] **Step 1: Create the fixture files**
 
-`apps/annotation-studio/tests/fixtures/real_span_trimmed.json` (real message shape, trimmed to one prior turn + the turn this span answers):
+`apps/annotation-studio/tests/fixtures/real_span_trimmed.json` (real message shape, trimmed to
+one prior turn + the turn this span answers):
 
 ```json
 {
@@ -646,7 +973,8 @@ Pure logic, no network — extracts a turn's input/output from one Logfire span 
 }
 ```
 
-`apps/annotation-studio/tests/fixtures/final_result_present.json` (tests that a present, non-scrubbed `final_result` wins over the assistant message text):
+`apps/annotation-studio/tests/fixtures/final_result_present.json` (tests that a present,
+non-scrubbed `final_result` wins over the assistant message text):
 
 ```json
 {
@@ -669,7 +997,8 @@ Pure logic, no network — extracts a turn's input/output from one Logfire span 
 }
 ```
 
-`apps/annotation-studio/tests/fixtures/malformed_attributes.json` (tests the raw-attributes fallback):
+`apps/annotation-studio/tests/fixtures/malformed_attributes.json` (tests the raw-attributes
+fallback):
 
 ```json
 {
@@ -691,7 +1020,15 @@ from pathlib import Path
 
 import pytest
 
-from annotation_studio.logfire_client import parse_interaction, validate_agent_name
+import annotation_studio.logfire_client as logfire_client
+from annotation_studio.logfire_client import (
+    Cursor,
+    decode_cursor,
+    encode_cursor,
+    parse_interaction,
+    validate_agent_name,
+    validate_trace_and_span,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -742,6 +1079,126 @@ def test_validate_agent_name_accepts_valid_names() -> None:
 def test_validate_agent_name_rejects_sql_injection_attempt() -> None:
     with pytest.raises(ValueError):
         validate_agent_name("rx_assistant_agent' OR 1=1 --")
+
+
+def test_validate_trace_and_span_accepts_real_ids() -> None:
+    validate_trace_and_span("01a045b8d6d40acd6c98ee00f1a3fe93", "c7a2373c3fe61d3f")  # does not raise
+
+
+@pytest.mark.parametrize(
+    "trace_id,span_id",
+    [("not-hex", "c7a2373c3fe61d3f"), ("01a045b8d6d40acd6c98ee00f1a3fe93", "too-short")],
+)
+def test_validate_trace_and_span_rejects_malformed_ids(trace_id: str, span_id: str) -> None:
+    with pytest.raises(ValueError):
+        validate_trace_and_span(trace_id, span_id)
+
+
+def test_cursor_round_trip() -> None:
+    cursor = Cursor(start_timestamp="2026-08-28T00:15:36.667186Z", span_id="c7a2373c3fe61d3f")
+
+    assert decode_cursor(encode_cursor(cursor)) == cursor
+
+
+def test_decode_cursor_rejects_malformed_input() -> None:
+    with pytest.raises(ValueError):
+        decode_cursor("not-valid-base64!!")
+
+
+class FakeQueryClient:
+    def __init__(self, rows, info=None, base_url="https://logfire-us.pydantic.dev"):
+        self._rows = rows
+        self._info = info or {"organization_name": "duncan", "project_name": "rx-assistant-demo"}
+        self.base_url = base_url
+        self.queries: list[dict] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+    async def info(self):
+        return self._info
+
+    async def query_json_rows(self, sql, min_timestamp=None, limit=None, **kwargs):
+        self.queries.append({"sql": sql, "min_timestamp": min_timestamp, "limit": limit})
+        return {"columns": [], "rows": self._rows[:limit] if limit is not None else self._rows}
+
+
+def _row(trace_id: str, start_timestamp: str, span_id: str = "span-1") -> dict:
+    return {
+        "trace_id": trace_id,
+        "span_id": span_id,
+        "start_timestamp": start_timestamp,
+        "duration": 1.0,
+        "attributes": {
+            "pydantic_ai.new_message_index": 0,
+            "pydantic_ai.all_messages": [
+                {"role": "user", "parts": [{"type": "text", "content": "hi"}]},
+                {"role": "assistant", "parts": [{"type": "text", "content": "hello"}], "finish_reason": "stop"},
+            ],
+            "final_result": "hello",
+        },
+    }
+
+
+def test_build_trace_link_matches_logfire_mcp_server_format() -> None:
+    url = logfire_client.build_trace_link("https://logfire-us.pydantic.dev", "duncan", "rx-assistant-demo", "abc123")
+    assert url == "https://logfire-us.pydantic.dev/duncan/rx-assistant-demo?q=trace_id='abc123'"
+
+
+async def test_fetch_project_interactions_returns_parsed_rows_with_trace_urls(monkeypatch) -> None:
+    fake_client = FakeQueryClient([_row("trace-1", "2026-08-28T00:00:00Z")])
+    monkeypatch.setattr(logfire_client, "AsyncLogfireQueryClient", lambda read_token: fake_client)
+
+    interactions, next_cursor = await logfire_client.fetch_project_interactions(
+        "test-token", "rx_assistant_agent", cursor=None, limit=20
+    )
+
+    assert len(interactions) == 1
+    assert interactions[0].trace_id == "trace-1"
+    assert interactions[0].trace_url == "https://logfire-us.pydantic.dev/duncan/rx-assistant-demo?q=trace_id='trace-1'"
+    assert next_cursor is None  # only 1 row came back for limit+1=21 — no next page
+    assert "invoke_agent rx_assistant_agent" in fake_client.queries[0]["sql"]
+    assert fake_client.queries[0]["limit"] == 21
+
+
+async def test_fetch_project_interactions_sets_next_cursor_when_extra_row_exists(monkeypatch) -> None:
+    rows = [_row(f"trace-{i}", f"2026-08-28T00:0{i}:00Z", span_id=f"span-{i}") for i in range(3)]
+    fake_client = FakeQueryClient(rows)
+    monkeypatch.setattr(logfire_client, "AsyncLogfireQueryClient", lambda read_token: fake_client)
+
+    interactions, next_cursor = await logfire_client.fetch_project_interactions(
+        "test-token", "rx_assistant_agent", cursor=None, limit=2
+    )
+
+    assert len(interactions) == 2  # only page_size returned, not the peeked-ahead extra row
+    assert next_cursor is not None
+    decoded = logfire_client.decode_cursor(next_cursor)
+    assert decoded.start_timestamp == interactions[-1].start_timestamp
+    assert decoded.span_id == interactions[-1].span_id
+
+
+async def test_fetch_project_interactions_applies_keyset_predicate_on_later_pages(monkeypatch) -> None:
+    fake_client = FakeQueryClient([_row("trace-1", "2026-08-28T00:00:00Z")])
+    monkeypatch.setattr(logfire_client, "AsyncLogfireQueryClient", lambda read_token: fake_client)
+    cursor = logfire_client.encode_cursor(
+        logfire_client.Cursor(start_timestamp="2026-08-28T00:05:00Z", span_id="c7a2373c3fe61d3f")
+    )
+
+    await logfire_client.fetch_project_interactions("test-token", "rx_assistant_agent", cursor=cursor, limit=20)
+
+    sql = fake_client.queries[0]["sql"]
+    assert "ORDER BY start_timestamp DESC, span_id DESC" in sql
+    assert "c7a2373c3fe61d3f" in sql
+
+
+async def test_fetch_project_interactions_rejects_invalid_agent_name() -> None:
+    with pytest.raises(ValueError):
+        await logfire_client.fetch_project_interactions(
+            "test-token", "not valid; DROP TABLE records", cursor=None, limit=20
+        )
 ```
 
 - [ ] **Step 3: Run the tests to verify they fail**
@@ -755,19 +1212,60 @@ Expected: FAIL/ERROR — `annotation_studio.logfire_client` doesn't exist yet.
 - [ ] **Step 4: Create `src/annotation_studio/logfire_client.py`**
 
 ```python
+import base64
+import json
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
+
+from logfire.experimental.query_client import AsyncLogfireQueryClient
 
 AGENT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_]+$")
+TRACE_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+SPAN_ID_PATTERN = re.compile(r"^[0-9a-f]{16}$")
 
 
 def validate_agent_name(name: str) -> None:
     """Raise ValueError if `name` isn't safe to interpolate into the SQL span-name filter
-    in fetch_project_interactions (Task 4) — it comes from a project's stored, UI-editable
-    top_level_agent_name, so this is the only thing standing between that field and a
-    SQL-injection into Logfire's query engine."""
+    below — it comes from a project's stored, UI-editable top_level_agent_name, so this is
+    the only thing standing between that field and a SQL-injection into Logfire's query
+    engine."""
     if not AGENT_NAME_PATTERN.match(name):
         raise ValueError(f"Invalid top_level_agent_name: {name!r}")
+
+
+def validate_trace_and_span(trace_id: str, span_id: str) -> None:
+    """Raise ValueError if either id isn't a well-formed W3C trace/span id — guards both the
+    keyset-pagination cursor below (span_id gets interpolated into a SQL predicate) and the
+    write-back traceparent construction in logfire_writer.py (Task 4)."""
+    if not TRACE_ID_PATTERN.match(trace_id):
+        raise ValueError(f"Invalid trace_id: {trace_id!r}")
+    if not SPAN_ID_PATTERN.match(span_id):
+        raise ValueError(f"Invalid span_id: {span_id!r}")
+
+
+@dataclass(frozen=True)
+class Cursor:
+    start_timestamp: str
+    span_id: str
+
+
+def encode_cursor(cursor: Cursor) -> str:
+    payload = json.dumps(asdict(cursor)).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii")
+
+
+def decode_cursor(value: str) -> Cursor:
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(value.encode("ascii")))
+        start_timestamp = payload["start_timestamp"]
+        span_id = payload["span_id"]
+        datetime.fromisoformat(start_timestamp)  # raises ValueError if malformed
+        if not SPAN_ID_PATTERN.match(span_id):
+            raise ValueError(f"Invalid span_id in cursor: {span_id!r}")
+    except (ValueError, KeyError, TypeError, UnicodeDecodeError) as exc:
+        raise ValueError(f"Invalid cursor: {value!r}") from exc
+    return Cursor(start_timestamp=start_timestamp, span_id=span_id)
 
 
 @dataclass
@@ -846,139 +1344,6 @@ def parse_interaction(row: dict, trace_url: str) -> Interaction:
         full_conversation=all_messages,
         trace_url=trace_url,
     )
-```
-
-- [ ] **Step 5: Run the tests to verify they pass**
-
-```bash
-uv run pytest apps/annotation-studio/tests/test_logfire_client.py -v
-```
-
-Expected: 5 passed.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add apps/annotation-studio/src/annotation_studio/logfire_client.py \
-  apps/annotation-studio/tests/fixtures/ apps/annotation-studio/tests/test_logfire_client.py
-git commit -m "annotation-studio: add message-parsing logic grounded in a real rx-assistant span"
-```
-
----
-
-### Task 4: Logfire query wrapper (`fetch_project_interactions`)
-
-**Files:**
-- Modify: `apps/annotation-studio/src/annotation_studio/logfire_client.py`
-- Modify: `apps/annotation-studio/tests/test_logfire_client.py`
-
-**Interfaces:**
-- Consumes: `Interaction`, `parse_interaction`, `validate_agent_name` (Task 3).
-- Produces: `logfire_client.build_trace_link(base_url: str, organization_name: str, project_name: str, trace_id: str) -> str`, `async logfire_client.fetch_project_interactions(read_token: str, top_level_agent_name: str, cursor: str | None, limit: int) -> tuple[list[Interaction], str | None]`. Task 6's routes monkeypatch this exact function name in `annotation_studio.routes`'s namespace.
-
-- [ ] **Step 1: Write the failing tests** — append to `apps/annotation-studio/tests/test_logfire_client.py`
-
-```python
-import annotation_studio.logfire_client as logfire_client
-
-
-class FakeQueryClient:
-    def __init__(self, rows, info=None, base_url="https://logfire-us.pydantic.dev"):
-        self._rows = rows
-        self._info = info or {"organization_name": "duncan", "project_name": "rx-assistant-demo"}
-        self.base_url = base_url
-        self.queries: list[dict] = []
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *args):
-        return False
-
-    async def info(self):
-        return self._info
-
-    async def query_json_rows(self, sql, min_timestamp=None, max_timestamp=None, limit=None, **kwargs):
-        self.queries.append(
-            {"sql": sql, "min_timestamp": min_timestamp, "max_timestamp": max_timestamp, "limit": limit}
-        )
-        return {"columns": [], "rows": self._rows}
-
-
-def _row(trace_id: str, start_timestamp: str) -> dict:
-    return {
-        "trace_id": trace_id,
-        "span_id": "span-1",
-        "start_timestamp": start_timestamp,
-        "duration": 1.0,
-        "attributes": {
-            "pydantic_ai.new_message_index": 0,
-            "pydantic_ai.all_messages": [
-                {"role": "user", "parts": [{"type": "text", "content": "hi"}]},
-                {"role": "assistant", "parts": [{"type": "text", "content": "hello"}], "finish_reason": "stop"},
-            ],
-            "final_result": "hello",
-        },
-    }
-
-
-def test_build_trace_link_matches_logfire_mcp_server_format() -> None:
-    url = logfire_client.build_trace_link(
-        "https://logfire-us.pydantic.dev", "duncan", "rx-assistant-demo", "abc123"
-    )
-    assert url == "https://logfire-us.pydantic.dev/duncan/rx-assistant-demo?q=trace_id='abc123'"
-
-
-async def test_fetch_project_interactions_returns_parsed_rows_with_trace_urls(monkeypatch) -> None:
-    fake_client = FakeQueryClient([_row("trace-1", "2026-08-28T00:00:00Z")])
-    monkeypatch.setattr(logfire_client, "AsyncLogfireQueryClient", lambda read_token: fake_client)
-
-    interactions, next_cursor = await logfire_client.fetch_project_interactions(
-        "test-token", "rx_assistant_agent", cursor=None, limit=20
-    )
-
-    assert len(interactions) == 1
-    assert interactions[0].trace_id == "trace-1"
-    assert interactions[0].trace_url == "https://logfire-us.pydantic.dev/duncan/rx-assistant-demo?q=trace_id='trace-1'"
-    assert next_cursor is None  # page wasn't full (1 row < limit 20)
-    assert "invoke_agent rx_assistant_agent" in fake_client.queries[0]["sql"]
-
-
-async def test_fetch_project_interactions_sets_next_cursor_when_page_is_full(monkeypatch) -> None:
-    rows = [_row(f"trace-{i}", f"2026-08-28T00:0{i}:00Z") for i in range(2)]
-    fake_client = FakeQueryClient(rows)
-    monkeypatch.setattr(logfire_client, "AsyncLogfireQueryClient", lambda read_token: fake_client)
-
-    interactions, next_cursor = await logfire_client.fetch_project_interactions(
-        "test-token", "rx_assistant_agent", cursor=None, limit=2
-    )
-
-    assert next_cursor == interactions[-1].start_timestamp
-
-
-async def test_fetch_project_interactions_rejects_invalid_agent_name() -> None:
-    with pytest.raises(ValueError):
-        await logfire_client.fetch_project_interactions(
-            "test-token", "not valid; DROP TABLE records", cursor=None, limit=20
-        )
-```
-
-Add `import pytest` to the top of the file alongside the existing imports.
-
-- [ ] **Step 2: Run the tests to verify they fail**
-
-```bash
-uv run pytest apps/annotation-studio/tests/test_logfire_client.py -v
-```
-
-Expected: FAIL — `build_trace_link`/`fetch_project_interactions`/`AsyncLogfireQueryClient` not defined in the module yet.
-
-- [ ] **Step 3: Add to `src/annotation_studio/logfire_client.py`** (append below `parse_interaction`)
-
-```python
-from datetime import datetime, timedelta, timezone
-
-from logfire.experimental.query_client import AsyncLogfireQueryClient
 
 
 def build_trace_link(base_url: str, organization_name: str, project_name: str, trace_id: str) -> str:
@@ -992,60 +1357,272 @@ async def fetch_project_interactions(
     limit: int,
 ) -> tuple[list[Interaction], str | None]:
     """Fetch one page of interactions (most-recent-first) for `top_level_agent_name`, each
-    with its Logfire trace URL already attached. `cursor` is the `start_timestamp` of the
-    oldest interaction already shown (None for the first page); the returned `next_cursor`
-    is that same value for this page, or None if this page wasn't full (nothing older left
-    to load)."""
+    with its Logfire trace URL already attached, using exclusive keyset pagination over
+    `(start_timestamp, span_id)` so a page boundary can neither skip nor duplicate a row when
+    several spans share a timestamp (a real risk with fast automated traffic). `cursor` is the
+    opaque encoding of the last row already shown (None for the first page). Requests one row
+    beyond `limit` to detect whether another page exists; `next_cursor` is None once the extra
+    row isn't there.
+    """
     validate_agent_name(top_level_agent_name)
 
-    max_timestamp = datetime.fromisoformat(cursor) if cursor else None
+    decoded = decode_cursor(cursor) if cursor else None
     min_timestamp = datetime.now(timezone.utc) - timedelta(days=14)
     sql = (
         "SELECT trace_id, span_id, start_timestamp, duration, attributes "
         "FROM records "
         f"WHERE span_name = 'invoke_agent {top_level_agent_name}' "
-        "ORDER BY start_timestamp DESC"
     )
+    if decoded is not None:
+        # decode_cursor already validated these as an ISO timestamp and a 16-hex span id —
+        # query_json_rows has no way to bind this second predicate as a parameter, so an
+        # unvalidated cursor would otherwise be a SQL-injection surface here.
+        sql += (
+            f"AND (start_timestamp < timestamp '{decoded.start_timestamp}' "
+            f"OR (start_timestamp = timestamp '{decoded.start_timestamp}' "
+            f"AND span_id < '{decoded.span_id}')) "
+        )
+    sql += "ORDER BY start_timestamp DESC, span_id DESC"
 
     async with AsyncLogfireQueryClient(read_token) as client:
         info = await client.info()
-        result = await client.query_json_rows(
-            sql, min_timestamp=min_timestamp, max_timestamp=max_timestamp, limit=limit
-        )
+        result = await client.query_json_rows(sql, min_timestamp=min_timestamp, limit=limit + 1)
+        rows = result["rows"]
         interactions = [
             parse_interaction(
                 row,
-                build_trace_link(
-                    client.base_url, info["organization_name"], info["project_name"], row["trace_id"]
-                ),
+                build_trace_link(client.base_url, info["organization_name"], info["project_name"], row["trace_id"]),
             )
-            for row in result["rows"]
+            for row in rows[:limit]
         ]
 
-    next_cursor = interactions[-1].start_timestamp if len(interactions) == limit else None
+    next_cursor = None
+    if len(rows) > limit:
+        last = interactions[-1]
+        next_cursor = encode_cursor(Cursor(start_timestamp=last.start_timestamp, span_id=last.span_id))
     return interactions, next_cursor
 ```
 
-(Move the `AGENT_NAME_PATTERN`/`validate_agent_name`/`Interaction`/`_text_content`/`parse_interaction` definitions from Task 3 above this new code, or append this code at the end of the file — either way, the module ends up with both halves.)
-
-- [ ] **Step 4: Run the tests to verify they pass**
+- [ ] **Step 5: Run the tests to verify they pass**
 
 ```bash
 uv run pytest apps/annotation-studio/tests/test_logfire_client.py -v
 ```
 
-Expected: 9 passed.
+Expected: 14 passed.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add apps/annotation-studio/src/annotation_studio/logfire_client.py apps/annotation-studio/tests/test_logfire_client.py
-git commit -m "annotation-studio: add paginated Logfire query wrapper"
+git add apps/annotation-studio/src/annotation_studio/logfire_client.py \
+  apps/annotation-studio/tests/fixtures/ apps/annotation-studio/tests/test_logfire_client.py
+git commit -m "annotation-studio: add message parsing and keyset Logfire pagination"
 ```
 
 ---
 
-### Task 5: FastAPI app factory + projects API
+### Task 4: Append-only Logfire writer
+
+**Files:**
+- Create: `apps/annotation-studio/src/annotation_studio/logfire_writer.py`
+- Test: `apps/annotation-studio/tests/test_logfire_writer.py`
+
+**Interfaces:**
+- Consumes: `validate_trace_and_span` (Task 3). Produces `build_event_key(annotation) -> str`
+  and `AnnotationWriter.write(annotation, annotator, label) -> None`; write raises
+  `WritebackError` when the forced flush fails or the trace/span ids fail validation. Consumed
+  by `routes.py` (Task 5).
+
+- [ ] **Step 1: Write failing tests using a fake client** (imports: `logfire`, `pytest`,
+`from contextlib import contextmanager`, `from opentelemetry.trace.propagation.tracecontext
+import TraceContextTextMapPropagator`)
+
+```python
+from contextlib import contextmanager
+
+import logfire
+import pytest
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+
+from annotation_studio.logfire_writer import AnnotationWriter, WritebackError
+
+
+class FakeLogfire:
+    def __init__(self):
+        self.context = {}
+        self.events = []
+        self.flush_result = True
+
+    def info(self, message, **attrs):
+        self.context = dict(attrs)  # simplification: test reads attach_context's carrier separately
+        self.events.append(attrs)
+
+    def force_flush(self, timeout_millis=3000):
+        return self.flush_result
+
+
+def annotation():
+    return {"id": 11, "revision": 2, "trace_id": "01a045b8d6d40acd6c98ee00f1a3fe93",
+            "span_id": "c7a2373c3fe61d3f", "project_id": 1, "description": "Grounded"}
+
+
+def annotator():
+    return {"id": 7, "name": "Ada"}
+
+
+def label():
+    return {"id": 3, "name": "Pass"}
+
+
+@pytest.fixture
+def fake_logfire():
+    return FakeLogfire()
+
+
+def test_uses_local_configuration(monkeypatch):
+    calls = []
+    monkeypatch.setattr(logfire, "configure", lambda **kw: calls.append(kw) or FakeLogfire())
+    AnnotationWriter("write")
+    assert calls == [{"local": True, "token": "write", "service_name": "annotation-studio-writeback"}]
+
+
+def test_attaches_parent_and_tags_reviewer(fake_logfire):
+    AnnotationWriter("write", client=fake_logfire).write(annotation(), annotator(), label())
+    assert fake_logfire.events[0]["event_key"] == "annotation:11:revision:2"
+    assert "annotator-7" in fake_logfire.events[0]["_tags"]
+
+
+def test_uses_explicit_traceparent_propagator(monkeypatch, fake_logfire):
+    # Regression test: logfire.attach_context()'s *default* propagator can be guard-wrapped
+    # depending on distributed_tracing config and silently no-op the extraction, which would
+    # make the write-back an orphan log instead of a child of the source span. The writer
+    # must pass Logfire's own TraceContextTextMapPropagator() explicitly — the same thing
+    # logfire.experimental.annotations.raw_annotate_span does for the same reason.
+    calls = []
+    real_attach_context = logfire.attach_context
+
+    @contextmanager
+    def spy(carrier, **kwargs):
+        calls.append((carrier, kwargs.get("propagator")))
+        with real_attach_context(carrier, **kwargs):
+            yield
+
+    monkeypatch.setattr(logfire, "attach_context", spy)
+    AnnotationWriter("write", client=fake_logfire).write(annotation(), annotator(), label())
+    carrier, propagator = calls[0]
+    assert carrier["traceparent"] == "00-01a045b8d6d40acd6c98ee00f1a3fe93-c7a2373c3fe61d3f-01"
+    assert isinstance(propagator, TraceContextTextMapPropagator)
+
+
+def test_uses_logfire_feedback_attribute_conventions(fake_logfire):
+    AnnotationWriter("write", client=fake_logfire).write(annotation(), annotator(), label())
+    attrs = fake_logfire.events[0]
+    assert attrs["logfire.feedback.name"] == "label"
+    assert attrs["logfire.feedback.comment"] == annotation()["description"]
+
+
+def test_rejects_invalid_trace_or_span_id(fake_logfire):
+    with pytest.raises(WritebackError):
+        AnnotationWriter("write", client=fake_logfire).write(
+            {**annotation(), "trace_id": "not-hex"}, annotator(), label()
+        )
+
+
+def test_false_flush_result_is_a_write_failure(fake_logfire):
+    fake_logfire.flush_result = False
+    with pytest.raises(WritebackError):
+        AnnotationWriter("write", client=fake_logfire).write(annotation(), annotator(), label())
+```
+
+- [ ] **Step 2: Run the test and confirm failure.**
+
+```bash
+uv run pytest apps/annotation-studio/tests/test_logfire_writer.py -v
+```
+
+- [ ] **Step 3: Create `src/annotation_studio/logfire_writer.py`**
+
+```python
+import logfire
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+
+from annotation_studio.logfire_client import validate_trace_and_span
+
+# Logfire's own logfire.experimental.annotations module uses this exact propagator for the
+# same "attach to a span given its trace/span id" case — reused here rather than relying on
+# attach_context()'s default global text-map propagator (see the regression test above).
+TRACEPARENT_PROPAGATOR = TraceContextTextMapPropagator()
+
+
+class WritebackError(Exception):
+    pass
+
+
+def build_event_key(annotation: dict) -> str:
+    return f"annotation:{annotation['id']}:revision:{annotation['revision']}"
+
+
+class AnnotationWriter:
+    def __init__(self, write_token: str, client=None):
+        self.client = client or logfire.configure(
+            local=True, token=write_token, service_name="annotation-studio-writeback"
+        )
+
+    def write(self, annotation: dict, annotator: dict, label: dict | None) -> None:
+        try:
+            validate_trace_and_span(annotation["trace_id"], annotation["span_id"])
+        except ValueError as exc:
+            raise WritebackError(str(exc)) from exc
+
+        traceparent = f"00-{annotation['trace_id']}-{annotation['span_id']}-01"
+        label_name = label["name"] if label else None
+
+        with logfire.attach_context({"traceparent": traceparent}, propagator=TRACEPARENT_PROPAGATOR):
+            self.client.info(
+                "annotation_studio.annotation",
+                _tags=["annotation-studio", "human-annotation", f"annotator-{annotator['id']}"],
+                event_key=build_event_key(annotation),
+                annotation_id=annotation["id"],
+                annotation_revision=annotation["revision"],
+                annotator_id=annotator["id"],
+                annotator_name=annotator["name"],
+                label_id=label["id"] if label else None,
+                label_name=label_name,
+                description=annotation["description"],
+                project_id=annotation["project_id"],
+                source_trace_id=annotation["trace_id"],
+                source_span_id=annotation["span_id"],
+                # Attribute names Logfire's own logfire.experimental.annotations.
+                # record_feedback() uses, so this renders as feedback in the Logfire UI
+                # rather than a plain child log entry. record_feedback() itself can't be
+                # called directly — it always writes through the *global* Logfire instance,
+                # and this app needs a separately-token-scoped local=True client to keep
+                # write-back out of annotation-studio's own Logfire project — so the
+                # convention is replicated here against self.client instead.
+                **{"logfire.feedback.name": "label", "logfire.feedback.comment": annotation["description"]},
+            )
+        if not self.client.force_flush(timeout_millis=3000):
+            raise WritebackError("Logfire exporter did not flush within 3000ms")
+```
+
+- [ ] **Step 4: Run writer tests.**
+
+```bash
+uv run pytest apps/annotation-studio/tests/test_logfire_writer.py -v
+```
+
+Expected: 6 passed.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add apps/annotation-studio/src/annotation_studio/logfire_writer.py apps/annotation-studio/tests/test_logfire_writer.py
+git commit -m "annotation-studio: append annotation revisions to traces"
+```
+
+---
+
+### Task 5: FastAPI APIs and write-back orchestration
 
 **Files:**
 - Create: `apps/annotation-studio/src/annotation_studio/main.py`
@@ -1053,8 +1630,11 @@ git commit -m "annotation-studio: add paginated Logfire query wrapper"
 - Test: `apps/annotation-studio/tests/test_routes.py`
 
 **Interfaces:**
-- Consumes: `db.*` (Task 2), `logfire_client.validate_agent_name` (Task 3), `settings.AppSettings`/`SourceSettings` (Task 1).
-- Produces: `main.create_annotation_studio_app(send_to_logfire: bool | None = None, connection: sqlite3.Connection | None = None) -> FastAPI` and module-level `main.app`; `routes.register_routes(app, conn, source_settings, app_settings) -> None`. Task 6 extends `routes.py` in place (adds interactions/annotations endpoints to the same `register_routes` body) and Task 9's frontend consumes this API's JSON shapes directly.
+- Consumes: `db.*` (Task 2), `logfire_client.fetch_project_interactions`/`validate_agent_name`
+  (Task 3), `logfire_writer.AnnotationWriter` (Task 4), `settings.AppSettings`/`SourceSettings`
+  (Task 1).
+- Produces: `main.create_annotation_studio_app(send_to_logfire=None, connection=None,
+  writer=None) -> FastAPI` and module-level `main.app`; every route in the spec's API section.
 
 - [ ] **Step 1: Write the failing tests** — `apps/annotation-studio/tests/test_routes.py`
 
@@ -1064,79 +1644,228 @@ import sqlite3
 from fastapi.testclient import TestClient
 
 import annotation_studio.main as annotation_studio_main
+import annotation_studio.routes as routes
+from annotation_studio.logfire_client import Interaction
 
 
-def _app_with_fresh_db() -> TestClient:
+class FakeWriter:
+    def __init__(self, fail: bool = False):
+        self.fail = fail
+        self.calls = []
+
+    def write(self, annotation, annotator, label):
+        self.calls.append((annotation, annotator, label))
+        if self.fail:
+            raise RuntimeError("simulated Logfire outage")
+
+
+def _app(writer=None) -> TestClient:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    app = annotation_studio_main.create_annotation_studio_app(send_to_logfire=False, connection=conn)
+    app = annotation_studio_main.create_annotation_studio_app(
+        send_to_logfire=False, connection=conn, writer=writer or FakeWriter()
+    )
     return TestClient(app)
 
 
+def _project_id(client: TestClient) -> int:
+    return client.get("/api/projects").json()[0]["id"]
+
+
+def _create_annotator(client: TestClient, name: str) -> dict:
+    return client.post("/api/annotators", json={"name": name}).json()
+
+
+def _pass_label_id(client: TestClient, project_id: int) -> int:
+    return next(l["id"] for l in client.get(f"/api/projects/{project_id}").json()["labels"] if l["name"] == "Pass")
+
+
 def test_list_projects_returns_seeded_project() -> None:
-    client = _app_with_fresh_db()
+    client = _app()
 
     response = client.get("/api/projects")
 
     assert response.status_code == 200
-    body = response.json()
-    assert len(body) == 1
-    assert body[0]["name"] == "rx-assistant"
+    assert response.json()[0]["name"] == "rx-assistant"
 
 
 def test_get_project_includes_labels() -> None:
-    client = _app_with_fresh_db()
-    project_id = client.get("/api/projects").json()[0]["id"]
+    client = _app()
+    project_id = _project_id(client)
 
     response = client.get(f"/api/projects/{project_id}")
 
-    assert response.status_code == 200
-    labels = response.json()["labels"]
-    assert [label["name"] for label in labels] == ["Pass", "Neutral", "Fail"]
+    assert [l["name"] for l in response.json()["labels"]] == ["Pass", "Neutral", "Fail"]
 
 
 def test_get_project_returns_404_for_unknown_id() -> None:
-    client = _app_with_fresh_db()
+    client = _app()
 
-    response = client.get("/api/projects/999")
-
-    assert response.status_code == 404
+    assert client.get("/api/projects/999").status_code == 404
 
 
-def test_put_project_updates_criteria_and_labels() -> None:
-    client = _app_with_fresh_db()
-    project_id = client.get("/api/projects").json()[0]["id"]
+def test_put_project_updates_criteria_agent_name_and_labels_atomically() -> None:
+    client = _app()
+    project_id = _project_id(client)
+    pass_id = _pass_label_id(client, project_id)
 
     response = client.put(
         f"/api/projects/{project_id}",
-        json={"criteria_text": "Be strict.", "label_names": ["Good", "Bad"]},
+        json={
+            "criteria_text": "Be strict.",
+            "top_level_agent_name": "rx_assistant_agent_v2",
+            "labels": [{"id": pass_id, "name": "Approved"}, {"id": None, "name": "New"}],
+        },
     )
 
     assert response.status_code == 200
     body = response.json()
     assert body["criteria_text"] == "Be strict."
-    assert [label["name"] for label in body["labels"]] == ["Good", "Bad"]
+    assert body["top_level_agent_name"] == "rx_assistant_agent_v2"
+    assert [l["name"] for l in body["labels"]] == ["Approved", "New"]
 
 
-def test_put_project_updates_top_level_agent_name_when_valid() -> None:
-    client = _app_with_fresh_db()
-    project_id = client.get("/api/projects").json()[0]["id"]
+def test_put_project_rejects_invalid_agent_name() -> None:
+    client = _app()
+    project_id = _project_id(client)
+
+    response = client.put(f"/api/projects/{project_id}", json={"top_level_agent_name": "not valid; DROP TABLE"})
+
+    assert response.status_code == 400
+
+
+def test_put_project_returns_409_when_removing_label_in_use() -> None:
+    client = _app()
+    project_id = _project_id(client)
+    annotator = _create_annotator(client, "Ada")
+    neutral_id = next(l["id"] for l in client.get(f"/api/projects/{project_id}").json()["labels"] if l["name"] == "Neutral")
+    client.put(
+        f"/api/projects/{project_id}/annotations/trace-1/span-1",
+        json={"annotator_id": annotator["id"], "label_id": neutral_id, "description": "why"},
+    )
+
+    response = client.put(f"/api/projects/{project_id}", json={"labels": [{"id": None, "name": "Only"}]})
+
+    assert response.status_code == 409
+
+
+def test_annotator_crud_lifecycle() -> None:
+    client = _app()
+
+    created = client.post("/api/annotators", json={"name": "Ada"})
+    assert created.status_code == 200
+    annotator_id = created.json()["id"]
+
+    duplicate = client.post("/api/annotators", json={"name": "ada"})
+    assert duplicate.status_code == 409
+
+    renamed = client.put(f"/api/annotators/{annotator_id}", json={"name": "Ada Lovelace"})
+    assert renamed.status_code == 200
+    assert renamed.json()["name"] == "Ada Lovelace"
+
+    assert client.get("/api/annotators").json()[0]["name"] == "Ada Lovelace"
+
+    deleted = client.delete(f"/api/annotators/{annotator_id}")
+    assert deleted.status_code == 204
+    assert client.get("/api/annotators").json() == []
+
+
+def test_delete_referenced_annotator_returns_409() -> None:
+    client = _app()
+    project_id = _project_id(client)
+    annotator = _create_annotator(client, "Ada")
+    pass_id = _pass_label_id(client, project_id)
+    client.put(
+        f"/api/projects/{project_id}/annotations/trace-1/span-1",
+        json={"annotator_id": annotator["id"], "label_id": pass_id, "description": "ok"},
+    )
+
+    response = client.delete(f"/api/annotators/{annotator['id']}")
+
+    assert response.status_code == 409
+
+
+def test_list_interactions_requires_annotator_id() -> None:
+    client = _app()
+    project_id = _project_id(client)
+
+    assert client.get(f"/api/projects/{project_id}/interactions").status_code == 400
+
+
+def test_list_interactions_merges_only_the_requesting_annotators_grade(monkeypatch) -> None:
+    client = _app()
+    project_id = _project_id(client)
+    ada = _create_annotator(client, "Ada")
+    grace = _create_annotator(client, "Grace")
+    pass_id = _pass_label_id(client, project_id)
+    client.put(
+        f"/api/projects/{project_id}/annotations/trace-1/span-1",
+        json={"annotator_id": ada["id"], "label_id": pass_id, "description": "good"},
+    )
+
+    async def fake_fetch(read_token, top_level_agent_name, cursor, limit):
+        return [
+            Interaction(
+                trace_id="trace-1", span_id="span-1", start_timestamp="2026-08-28T00:00:00Z",
+                input_text="q", output_text="a", full_conversation=[],
+                trace_url="https://logfire-us.pydantic.dev/duncan/rx-assistant-demo?q=trace_id='trace-1'",
+            )
+        ], None
+
+    monkeypatch.setattr(routes, "fetch_project_interactions", fake_fetch)
+
+    ada_page = client.get(f"/api/projects/{project_id}/interactions?annotator_id={ada['id']}").json()
+    grace_page = client.get(f"/api/projects/{project_id}/interactions?annotator_id={grace['id']}").json()
+
+    assert ada_page["items"][0]["annotation"]["label_id"] == pass_id
+    assert grace_page["items"][0]["annotation"] is None
+
+
+def test_upsert_annotation_creates_and_writes_back() -> None:
+    writer = FakeWriter()
+    client = _app(writer=writer)
+    project_id = _project_id(client)
+    annotator = _create_annotator(client, "Ada")
+    pass_id = _pass_label_id(client, project_id)
 
     response = client.put(
-        f"/api/projects/{project_id}", json={"top_level_agent_name": "rx_assistant_agent_v2"}
+        f"/api/projects/{project_id}/annotations/trace-1/span-1",
+        json={"annotator_id": annotator["id"], "label_id": pass_id, "description": "Correct and grounded."},
     )
 
     assert response.status_code == 200
-    assert response.json()["top_level_agent_name"] == "rx_assistant_agent_v2"
+    body = response.json()
+    assert body["writeback_status"] == "written"
+    assert body["written_at"] is not None
+    assert len(writer.calls) == 1
 
 
-def test_put_project_rejects_invalid_top_level_agent_name() -> None:
-    client = _app_with_fresh_db()
-    project_id = client.get("/api/projects").json()[0]["id"]
+def test_failed_writeback_keeps_saved_grade() -> None:
+    client = _app(writer=FakeWriter(fail=True))
+    project_id = _project_id(client)
+    annotator = _create_annotator(client, "Ada")
+    pass_id = _pass_label_id(client, project_id)
 
     response = client.put(
-        f"/api/projects/{project_id}", json={"top_level_agent_name": "not valid; DROP TABLE"}
+        f"/api/projects/{project_id}/annotations/trace-1/span-1",
+        json={"annotator_id": annotator["id"], "label_id": pass_id, "description": "Grounded"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["writeback_status"] == "failed"
+    assert body["description"] == "Grounded"
+    assert "RuntimeError" in body["writeback_error"]
+
+
+def test_upsert_annotation_rejects_unknown_annotator() -> None:
+    client = _app()
+    project_id = _project_id(client)
+
+    response = client.put(
+        f"/api/projects/{project_id}/annotations/trace-1/span-1",
+        json={"annotator_id": 999, "label_id": None, "description": ""},
     )
 
     assert response.status_code == 400
@@ -1148,25 +1877,45 @@ def test_put_project_rejects_invalid_top_level_agent_name() -> None:
 uv run pytest apps/annotation-studio/tests/test_routes.py -v
 ```
 
-Expected: FAIL/ERROR — `annotation_studio.main` doesn't exist yet.
+Expected: FAIL/ERROR — `annotation_studio.main`/`annotation_studio.routes` don't exist yet.
 
 - [ ] **Step 3: Create `src/annotation_studio/routes.py`**
 
 ```python
 import sqlite3
+from dataclasses import asdict
 
+from anyio import to_thread
 from fastapi import APIRouter, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from annotation_studio import db
-from annotation_studio.logfire_client import validate_agent_name
+from annotation_studio.logfire_client import fetch_project_interactions, validate_agent_name
+from annotation_studio.logfire_writer import AnnotationWriter
 from annotation_studio.settings import AppSettings, SourceSettings
+
+PAGE_SIZE = 20
+
+
+class LabelPayload(BaseModel):
+    id: int | None = None
+    name: str
 
 
 class ProjectUpdateRequest(BaseModel):
     criteria_text: str | None = None
     top_level_agent_name: str | None = None
-    label_names: list[str] | None = None
+    labels: list[LabelPayload] | None = None
+
+
+class AnnotatorRequest(BaseModel):
+    name: str
+
+
+class AnnotationUpdateRequest(BaseModel):
+    annotator_id: int
+    label_id: int | None = None
+    description: str = ""
 
 
 def register_routes(
@@ -1174,6 +1923,7 @@ def register_routes(
     conn: sqlite3.Connection,
     source_settings: SourceSettings,
     app_settings: AppSettings,
+    writer: AnnotationWriter,
 ) -> None:
     router = APIRouter(prefix="/api")
 
@@ -1191,29 +1941,101 @@ def register_routes(
 
     @router.put("/projects/{project_id}")
     async def update_project(project_id: int, payload: ProjectUpdateRequest) -> dict:
+        if db.get_project(conn, project_id) is None:
+            raise HTTPException(status_code=404, detail="project_not_found")
+        labels = (
+            [db.LabelInput(id=label.id, name=label.name) for label in payload.labels]
+            if payload.labels is not None
+            else None
+        )
+        try:
+            return db.update_project(
+                conn, project_id, payload.criteria_text, payload.top_level_agent_name, labels
+            )
+        except db.ValidationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except db.ConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @router.get("/annotators")
+    async def list_annotators() -> list[dict]:
+        return db.list_annotators(conn)
+
+    @router.post("/annotators")
+    async def create_annotator(payload: AnnotatorRequest) -> dict:
+        try:
+            return db.create_annotator(conn, payload.name)
+        except db.ValidationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except db.ConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @router.put("/annotators/{annotator_id}")
+    async def rename_annotator(annotator_id: int, payload: AnnotatorRequest) -> dict:
+        if db.get_annotator(conn, annotator_id) is None:
+            raise HTTPException(status_code=404, detail="annotator_not_found")
+        try:
+            return db.rename_annotator(conn, annotator_id, payload.name)
+        except db.ValidationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except db.ConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @router.delete("/annotators/{annotator_id}", status_code=204)
+    async def delete_annotator(annotator_id: int) -> None:
+        if db.get_annotator(conn, annotator_id) is None:
+            raise HTTPException(status_code=404, detail="annotator_not_found")
+        try:
+            db.delete_annotator(conn, annotator_id)
+        except db.ConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @router.get("/projects/{project_id}/interactions")
+    async def list_interactions(project_id: int, annotator_id: int, cursor: str | None = None) -> dict:
         project = db.get_project(conn, project_id)
         if project is None:
             raise HTTPException(status_code=404, detail="project_not_found")
+        if db.get_annotator(conn, annotator_id) is None:
+            raise HTTPException(status_code=400, detail="unknown_annotator_id")
 
-        if payload.top_level_agent_name is not None:
-            try:
-                validate_agent_name(payload.top_level_agent_name)
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc))
-            db.update_project_top_level_agent_name(conn, project_id, payload.top_level_agent_name)
+        try:
+            interactions, next_cursor = await fetch_project_interactions(
+                source_settings.read_token, project["top_level_agent_name"], cursor, PAGE_SIZE
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
-        if payload.criteria_text is not None:
-            db.update_project_criteria(conn, project_id, payload.criteria_text)
+        items = []
+        for interaction in interactions:
+            annotation = db.get_annotation(conn, project_id, interaction.trace_id, interaction.span_id, annotator_id)
+            items.append({**asdict(interaction), "annotation": annotation})
 
-        if payload.label_names is not None:
-            try:
-                db.update_project_labels(conn, project_id, payload.label_names)
-            except ValueError as exc:
-                raise HTTPException(status_code=409, detail=str(exc))
+        return {"items": items, "next_cursor": next_cursor}
 
-        project = db.get_project(conn, project_id)
-        project["labels"] = db.list_labels(conn, project_id)
-        return project
+    @router.put("/projects/{project_id}/annotations/{trace_id}/{span_id}")
+    async def upsert_annotation(
+        project_id: int, trace_id: str, span_id: str, payload: AnnotationUpdateRequest
+    ) -> dict:
+        if db.get_project(conn, project_id) is None:
+            raise HTTPException(status_code=404, detail="project_not_found")
+        try:
+            annotation = db.upsert_annotation(
+                conn, project_id, trace_id, span_id, payload.annotator_id, payload.label_id, payload.description,
+            )
+        except db.ValidationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        annotator = db.get_annotator(conn, payload.annotator_id)
+        label = db.get_label(conn, payload.label_id) if payload.label_id else None
+        try:
+            # force_flush() blocks for up to 3s — run off the event loop so one slow
+            # write-back can't stall every other concurrent request.
+            await to_thread.run_sync(writer.write, annotation, annotator, label)
+        except Exception as exc:
+            db.mark_writeback_failed(conn, annotation["id"], annotation["revision"], f"{type(exc).__name__}: {exc}")
+        else:
+            db.mark_writeback_written(conn, annotation["id"], annotation["revision"])
+        return db.get_annotation(conn, project_id, trace_id, span_id, payload.annotator_id)
 
     app.include_router(router)
 ```
@@ -1234,6 +2056,7 @@ from demo_core.settings import LogfireSettings
 from demo_core.web import create_app
 
 from annotation_studio import db
+from annotation_studio.logfire_writer import AnnotationWriter
 from annotation_studio.routes import register_routes
 from annotation_studio.settings import AppSettings, SourceSettings
 
@@ -1241,7 +2064,9 @@ _STATIC_DIST = Path(__file__).parent / "static" / "dist"
 
 
 def create_annotation_studio_app(
-    send_to_logfire: bool | None = None, connection: sqlite3.Connection | None = None
+    send_to_logfire: bool | None = None,
+    connection: sqlite3.Connection | None = None,
+    writer: AnnotationWriter | None = None,
 ) -> FastAPI:
     if send_to_logfire is None:
         # Lets the test suite (see tests/conftest.py) force offline mode before this
@@ -1259,7 +2084,11 @@ def create_annotation_studio_app(
     db.init_db(conn)
     db.seed_default_project(conn, source_settings.top_level_agent_name)
 
-    register_routes(app, conn, source_settings, app_settings)
+    # `writer` injection lets tests supply a fake without ever calling
+    # logfire.configure(local=True, ...) in the test suite.
+    active_writer = writer if writer is not None else AnnotationWriter(source_settings.write_token)
+
+    register_routes(app, conn, source_settings, app_settings, active_writer)
 
     # Serve the built React SPA. /assets holds Vite's hashed JS/CSS; the catch-all below
     # returns index.html for every other non-API path so React Router's client-side routes
@@ -1283,237 +2112,32 @@ app = create_annotation_studio_app()
 uv run pytest apps/annotation-studio/tests/test_routes.py -v
 ```
 
-Expected: 6 passed.
+Expected: 15 passed.
 
-- [ ] **Step 6: Commit**
-
-```bash
-git add apps/annotation-studio/src/annotation_studio/main.py apps/annotation-studio/src/annotation_studio/routes.py \
-  apps/annotation-studio/tests/test_routes.py
-git commit -m "annotation-studio: add FastAPI app factory and projects API"
-```
-
----
-
-### Task 6: Interactions + annotations API
-
-**Files:**
-- Modify: `apps/annotation-studio/src/annotation_studio/routes.py`
-- Modify: `apps/annotation-studio/tests/test_routes.py`
-
-**Interfaces:**
-- Consumes: `fetch_project_interactions` (Task 4), `db.get_annotation`/`db.upsert_annotation` (Task 2).
-- Produces: `GET /api/projects/{id}/interactions?cursor=` → `{"items": [...], "next_cursor": str | None}` where each item is an `Interaction` (Task 3 dataclass fields) plus `"annotation": dict | None`; `PUT /api/projects/{id}/annotations/{trace_id}/{span_id}` → the upserted annotation dict. Task 9's frontend `api.ts` calls these two endpoints directly with these exact shapes.
-
-- [ ] **Step 1: Write the failing tests** — append to `apps/annotation-studio/tests/test_routes.py`
-
-```python
-from annotation_studio.logfire_client import Interaction
-
-
-def _fake_interaction(
-    trace_id: str, span_id: str = "span-1", start_timestamp: str = "2026-08-28T00:00:00Z"
-) -> Interaction:
-    return Interaction(
-        trace_id=trace_id,
-        span_id=span_id,
-        start_timestamp=start_timestamp,
-        input_text="What about MDD?",
-        output_text="MDD is treated with SSRIs.",
-        full_conversation=[
-            {"role": "user", "parts": [{"type": "text", "content": "What about MDD?"}]},
-            {"role": "assistant", "parts": [{"type": "text", "content": "MDD is treated with SSRIs."}]},
-        ],
-        trace_url=f"https://logfire-us.pydantic.dev/duncan/rx-assistant-demo?q=trace_id='{trace_id}'",
-    )
-
-
-def test_list_interactions_merges_local_annotations(monkeypatch) -> None:
-    async def fake_fetch(read_token, top_level_agent_name, cursor, limit):
-        return [_fake_interaction("trace-1")], None
-
-    import annotation_studio.routes as routes
-    monkeypatch.setattr(routes, "fetch_project_interactions", fake_fetch)
-
-    client = _app_with_fresh_db()
-    project_id = client.get("/api/projects").json()[0]["id"]
-
-    response = client.get(f"/api/projects/{project_id}/interactions")
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["next_cursor"] is None
-    assert len(body["items"]) == 1
-    assert body["items"][0]["trace_id"] == "trace-1"
-    assert body["items"][0]["annotation"] is None
-
-
-def test_upsert_annotation_creates_and_returns_it() -> None:
-    client = _app_with_fresh_db()
-    project_id = client.get("/api/projects").json()[0]["id"]
-    pass_id = next(
-        label["id"] for label in client.get(f"/api/projects/{project_id}").json()["labels"] if label["name"] == "Pass"
-    )
-
-    response = client.put(
-        f"/api/projects/{project_id}/annotations/trace-1/span-1",
-        json={"label_id": pass_id, "description": "Correct and grounded."},
-    )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["label_id"] == pass_id
-    assert body["description"] == "Correct and grounded."
-
-
-def test_upsert_annotation_uses_configured_default_annotator(monkeypatch) -> None:
-    monkeypatch.setenv("ANNOTATION_STUDIO_DEFAULT_ANNOTATOR", "duncan@pydantic.dev")
-    client = _app_with_fresh_db()
-    project_id = client.get("/api/projects").json()[0]["id"]
-
-    response = client.put(
-        f"/api/projects/{project_id}/annotations/trace-1/span-1",
-        json={"label_id": None, "description": ""},
-    )
-
-    assert response.json()["annotator"] == "duncan@pydantic.dev"
-
-
-def test_list_interactions_returns_annotation_when_already_graded(monkeypatch) -> None:
-    client = _app_with_fresh_db()
-    project_id = client.get("/api/projects").json()[0]["id"]
-    pass_id = next(
-        label["id"] for label in client.get(f"/api/projects/{project_id}").json()["labels"] if label["name"] == "Pass"
-    )
-    client.put(
-        f"/api/projects/{project_id}/annotations/trace-1/span-1",
-        json={"label_id": pass_id, "description": "good"},
-    )
-
-    async def fake_fetch(read_token, top_level_agent_name, cursor, limit):
-        return [_fake_interaction("trace-1", span_id="span-1")], None
-
-    import annotation_studio.routes as routes
-    monkeypatch.setattr(routes, "fetch_project_interactions", fake_fetch)
-
-    response = client.get(f"/api/projects/{project_id}/interactions")
-
-    assert response.json()["items"][0]["annotation"]["label_id"] == pass_id
-
-
-def test_put_project_returns_409_when_removing_label_in_use() -> None:
-    client = _app_with_fresh_db()
-    project_id = client.get("/api/projects").json()[0]["id"]
-    neutral_id = next(
-        label["id"] for label in client.get(f"/api/projects/{project_id}").json()["labels"] if label["name"] == "Neutral"
-    )
-    client.put(
-        f"/api/projects/{project_id}/annotations/trace-1/span-1",
-        json={"label_id": neutral_id, "description": "why"},
-    )
-
-    response = client.put(f"/api/projects/{project_id}", json={"label_names": ["Pass", "Fail"]})
-
-    assert response.status_code == 409
-```
-
-- [ ] **Step 2: Run the tests to verify they fail**
-
-```bash
-uv run pytest apps/annotation-studio/tests/test_routes.py -v
-```
-
-Expected: FAIL — the interactions/annotations routes don't exist yet (404s), and `fetch_project_interactions` isn't imported into `routes.py` yet so `monkeypatch.setattr` errors.
-
-- [ ] **Step 3: Modify `src/annotation_studio/routes.py`** — add imports and two new route handlers inside `register_routes`, before `app.include_router(router)`
-
-Add to the imports at the top:
-
-```python
-from dataclasses import asdict
-
-from annotation_studio.logfire_client import fetch_project_interactions, validate_agent_name
-```
-
-(replacing the single-line `from annotation_studio.logfire_client import validate_agent_name`)
-
-Add below the class `ProjectUpdateRequest`:
-
-```python
-PAGE_SIZE = 20
-
-
-class AnnotationUpdateRequest(BaseModel):
-    label_id: int | None = None
-    description: str = ""
-```
-
-Add inside `register_routes`, after the `update_project` handler and before `app.include_router(router)`:
-
-```python
-    @router.get("/projects/{project_id}/interactions")
-    async def list_interactions(project_id: int, cursor: str | None = None) -> dict:
-        project = db.get_project(conn, project_id)
-        if project is None:
-            raise HTTPException(status_code=404, detail="project_not_found")
-
-        interactions, next_cursor = await fetch_project_interactions(
-            source_settings.read_token, project["top_level_agent_name"], cursor, PAGE_SIZE
-        )
-
-        items = []
-        for interaction in interactions:
-            annotation = db.get_annotation(conn, project_id, interaction.trace_id, interaction.span_id)
-            items.append({**asdict(interaction), "annotation": annotation})
-
-        return {"items": items, "next_cursor": next_cursor}
-
-    @router.put("/projects/{project_id}/annotations/{trace_id}/{span_id}")
-    async def upsert_annotation(
-        project_id: int, trace_id: str, span_id: str, payload: AnnotationUpdateRequest
-    ) -> dict:
-        project = db.get_project(conn, project_id)
-        if project is None:
-            raise HTTPException(status_code=404, detail="project_not_found")
-        return db.upsert_annotation(
-            conn,
-            project_id,
-            trace_id,
-            span_id,
-            payload.label_id,
-            payload.description,
-            app_settings.default_annotator,
-        )
-```
-
-- [ ] **Step 4: Run the tests to verify they pass**
-
-```bash
-uv run pytest apps/annotation-studio/tests/test_routes.py -v
-```
-
-Expected: 11 passed.
-
-- [ ] **Step 5: Run the full backend suite**
+- [ ] **Step 6: Run the full backend suite**
 
 ```bash
 uv run pytest apps/annotation-studio/tests/ -v
 ```
 
-Expected: 28 passed (4 settings + 8 db + 9 logfire_client + 11 routes − wait: sum precisely by running; all green either way).
+Expected: all tests across `test_settings.py`, `test_db.py`, `test_logfire_client.py`,
+`test_logfire_writer.py`, `test_routes.py` pass.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add apps/annotation-studio/src/annotation_studio/routes.py apps/annotation-studio/tests/test_routes.py
-git commit -m "annotation-studio: add interactions and annotations API"
+git add apps/annotation-studio/src/annotation_studio/main.py apps/annotation-studio/src/annotation_studio/routes.py \
+  apps/annotation-studio/tests/test_routes.py
+git commit -m "annotation-studio: add reviewer APIs and write-back orchestration"
 ```
 
 ---
 
-### Task 7: Frontend scaffold — build tooling, routing shell, types, API client
+### Task 6: Frontend scaffold and annotator selection
 
-No test-first cycle here — per the spec's Testing section, this app's frontend has no unit-test suite in v1. `npm run build` succeeding (TypeScript typecheck + Vite bundle) is this task's correctness gate.
+No test-first cycle here — per the spec's Testing section, this app's frontend has no
+unit-test suite in v1. `npm run build` succeeding (TypeScript typecheck + Vite bundle) is this
+task's correctness gate, alongside manual in-browser verification.
 
 **Files:**
 - Create: `apps/annotation-studio/frontend/package.json`
@@ -1526,12 +2150,19 @@ No test-first cycle here — per the spec's Testing section, this app's frontend
 - Create: `apps/annotation-studio/frontend/src/index.css`
 - Create: `apps/annotation-studio/frontend/src/types.ts`
 - Create: `apps/annotation-studio/frontend/src/api.ts`
+- Create: `apps/annotation-studio/frontend/src/annotator.tsx`
+- Create: `apps/annotation-studio/frontend/src/pages/Annotators.tsx`
 - Create: `apps/annotation-studio/frontend/src/pages/ProjectList.tsx`
-- Create: `apps/annotation-studio/frontend/src/pages/ProjectDetail.tsx`
+- Create: `apps/annotation-studio/frontend/src/pages/ProjectDetail.tsx` (placeholder; built out in Task 7)
 - Modify: `.gitignore`
 
 **Interfaces:**
-- Produces: `types.ts`'s `Label`, `ProjectSummary`, `Project`, `MessagePart`, `Message`, `Interaction`, `InteractionsPage`, `Annotation`; `api.ts`'s `listProjects`, `getProject`, `updateProject`, `listInteractions`, `upsertAnnotation`. Tasks 8–11 build the actual page/component content against these types and functions — this task's `ProjectList`/`ProjectDetail` are minimal placeholders that render without error.
+- Produces: `types.ts`'s `Label`, `ProjectSummary`, `Project`, `Annotator`, `Annotation`,
+  `MessagePart`, `Message`, `Interaction`, `InteractionsPage`; `api.ts`'s `listProjects`,
+  `getProject`, `updateProject`, `listAnnotators`, `createAnnotator`, `renameAnnotator`,
+  `deleteAnnotator`, `listInteractions`, `upsertAnnotation`; `annotator.tsx`'s
+  `AnnotatorProvider`/`useAnnotator()`. Task 7 builds `ProjectDetail`'s real content and
+  grading UI against these.
 
 - [ ] **Step 1: Create `frontend/package.json`**
 
@@ -1660,11 +2291,22 @@ export interface Project extends ProjectSummary {
   labels: Label[];
 }
 
+export interface Annotator {
+  id: number;
+  name: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Annotation {
   id: number;
   label_id: number | null;
   description: string;
-  annotator: string;
+  annotator_id: number;
+  revision: number;
+  writeback_status: "pending" | "written" | "failed";
+  writeback_error: string | null;
+  written_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -1705,7 +2347,7 @@ export interface InteractionsPage {
 - [ ] **Step 6: Create `frontend/src/api.ts`**
 
 ```ts
-import type { Annotation, InteractionsPage, Project, ProjectSummary } from "./types";
+import type { Annotation, Annotator, InteractionsPage, Project, ProjectSummary } from "./types";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -1716,6 +2358,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     const body = await response.text();
     throw new Error(`${options?.method ?? "GET"} ${path} failed: ${response.status} ${body}`);
   }
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
@@ -1729,24 +2372,46 @@ export function getProject(projectId: number): Promise<Project> {
 
 export function updateProject(
   projectId: number,
-  payload: { criteria_text?: string; top_level_agent_name?: string; label_names?: string[] },
+  payload: {
+    criteria_text?: string;
+    top_level_agent_name?: string;
+    labels?: { id: number | null; name: string }[];
+  },
 ): Promise<Project> {
-  return request<Project>(`/api/projects/${projectId}`, {
-    method: "PUT",
-    body: JSON.stringify(payload),
-  });
+  return request<Project>(`/api/projects/${projectId}`, { method: "PUT", body: JSON.stringify(payload) });
 }
 
-export function listInteractions(projectId: number, cursor: string | null): Promise<InteractionsPage> {
-  const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
-  return request<InteractionsPage>(`/api/projects/${projectId}/interactions${query}`);
+export function listAnnotators(): Promise<Annotator[]> {
+  return request<Annotator[]>("/api/annotators");
+}
+
+export function createAnnotator(name: string): Promise<Annotator> {
+  return request<Annotator>("/api/annotators", { method: "POST", body: JSON.stringify({ name }) });
+}
+
+export function renameAnnotator(id: number, name: string): Promise<Annotator> {
+  return request<Annotator>(`/api/annotators/${id}`, { method: "PUT", body: JSON.stringify({ name }) });
+}
+
+export function deleteAnnotator(id: number): Promise<void> {
+  return request<void>(`/api/annotators/${id}`, { method: "DELETE" });
+}
+
+export function listInteractions(
+  projectId: number,
+  annotatorId: number,
+  cursor: string | null,
+): Promise<InteractionsPage> {
+  const params = new URLSearchParams({ annotator_id: String(annotatorId) });
+  if (cursor) params.set("cursor", cursor);
+  return request<InteractionsPage>(`/api/projects/${projectId}/interactions?${params.toString()}`);
 }
 
 export function upsertAnnotation(
   projectId: number,
   traceId: string,
   spanId: string,
-  payload: { label_id: number | null; description: string },
+  payload: { annotator_id: number; label_id: number | null; description: string },
 ): Promise<Annotation> {
   return request<Annotation>(`/api/projects/${projectId}/annotations/${traceId}/${spanId}`, {
     method: "PUT",
@@ -1755,15 +2420,202 @@ export function upsertAnnotation(
 }
 ```
 
-- [ ] **Step 7: Create placeholder pages** — `frontend/src/pages/ProjectList.tsx`
+- [ ] **Step 7: Create `frontend/src/annotator.tsx`** (local-identity selection, persisted in
+  `localStorage` — this is convenience state, not authentication)
 
 ```tsx
-export function ProjectList() {
-  return <h1>Annotation Studio</h1>;
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+
+import { listAnnotators } from "./api";
+import type { Annotator } from "./types";
+
+const STORAGE_KEY = "annotation-studio.annotator-id";
+
+interface AnnotatorContextValue {
+  annotators: Annotator[];
+  selectedId: number | null;
+  setSelectedId: (id: number | null) => void;
+  refresh: () => void;
+}
+
+const AnnotatorContext = createContext<AnnotatorContextValue | null>(null);
+
+function readStoredId(): number | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? Number(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function AnnotatorProvider({ children }: { children: ReactNode }) {
+  const [annotators, setAnnotators] = useState<Annotator[]>([]);
+  const [selectedId, setSelectedIdState] = useState<number | null>(readStoredId);
+
+  const refresh = () => {
+    listAnnotators().then(setAnnotators);
+  };
+
+  useEffect(refresh, []);
+
+  useEffect(() => {
+    // If the stored profile was deleted (e.g. from another tab), clear the selection
+    // rather than keep pointing at an id that no longer exists.
+    if (selectedId !== null && annotators.length > 0 && !annotators.some((a) => a.id === selectedId)) {
+      setSelectedIdState(null);
+    }
+  }, [annotators, selectedId]);
+
+  const setSelectedId = (id: number | null) => {
+    setSelectedIdState(id);
+    try {
+      if (id === null) localStorage.removeItem(STORAGE_KEY);
+      else localStorage.setItem(STORAGE_KEY, String(id));
+    } catch {
+      // localStorage unavailable — selection just won't survive a reload.
+    }
+  };
+
+  return (
+    <AnnotatorContext.Provider value={{ annotators, selectedId, setSelectedId, refresh }}>
+      {children}
+    </AnnotatorContext.Provider>
+  );
+}
+
+export function useAnnotator(): AnnotatorContextValue {
+  const value = useContext(AnnotatorContext);
+  if (!value) throw new Error("useAnnotator must be used within AnnotatorProvider");
+  return value;
 }
 ```
 
-`frontend/src/pages/ProjectDetail.tsx`:
+- [ ] **Step 8: Create `frontend/src/pages/Annotators.tsx`**
+
+```tsx
+import { useState } from "react";
+
+import { createAnnotator, deleteAnnotator, renameAnnotator } from "../api";
+import { useAnnotator } from "../annotator";
+
+export function Annotators() {
+  const { annotators, selectedId, setSelectedId, refresh } = useAnnotator();
+  const [newName, setNewName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const handleCreate = async () => {
+    setError(null);
+    try {
+      await createAnnotator(newName.trim());
+      setNewName("");
+      refresh();
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
+  const handleRename = async (id: number, name: string) => {
+    setError(null);
+    try {
+      await renameAnnotator(id, name);
+      refresh();
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
+  const handleDelete = async (id: number) => {
+    setError(null);
+    try {
+      await deleteAnnotator(id);
+      refresh();
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
+  return (
+    <div className="annotators-page">
+      <h1>Choose annotator</h1>
+      {error && <p className="error">{error}</p>}
+      {annotators.map((annotator) => (
+        <div key={annotator.id} className="annotator-row">
+          <button
+            className={annotator.id === selectedId ? "selected" : ""}
+            onClick={() => setSelectedId(annotator.id)}
+          >
+            {annotator.id === selectedId ? "Selected" : "Select"}
+          </button>
+          <input
+            defaultValue={annotator.name}
+            onBlur={(e) => {
+              const value = e.target.value.trim();
+              if (value && value !== annotator.name) handleRename(annotator.id, value);
+            }}
+          />
+          <button onClick={() => handleDelete(annotator.id)}>Remove</button>
+        </div>
+      ))}
+      <div className="annotator-row">
+        <input
+          placeholder="New annotator name"
+          value={newName}
+          onChange={(e) => setNewName(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && handleCreate()}
+        />
+        <button onClick={handleCreate} disabled={!newName.trim()}>
+          Add
+        </button>
+      </div>
+    </div>
+  );
+}
+```
+
+- [ ] **Step 9: Create `frontend/src/pages/ProjectList.tsx`**
+
+```tsx
+import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+
+import { listProjects } from "../api";
+import { useAnnotator } from "../annotator";
+import type { ProjectSummary } from "../types";
+
+export function ProjectList() {
+  const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const { annotators, selectedId } = useAnnotator();
+  const selectedName = annotators.find((a) => a.id === selectedId)?.name;
+
+  useEffect(() => {
+    listProjects()
+      .then(setProjects)
+      .catch((err: unknown) => setError(String(err)));
+  }, []);
+
+  if (error) return <p className="error">{error}</p>;
+  if (projects === null) return <p>Loading…</p>;
+
+  return (
+    <div className="project-list">
+      <header className="app-header">
+        <h1>Annotation Studio</h1>
+        <Link to="/annotators">{selectedName ?? "Choose annotator"}</Link>
+      </header>
+      {projects.map((project) => (
+        <Link key={project.id} to={`/projects/${project.id}`} className="project-card">
+          <h2>{project.name}</h2>
+          <p>Source agent: {project.top_level_agent_name}</p>
+        </Link>
+      ))}
+    </div>
+  );
+}
+```
+
+- [ ] **Step 10: Create a placeholder `frontend/src/pages/ProjectDetail.tsx`** (real content built in Task 7)
 
 ```tsx
 export function ProjectDetail() {
@@ -1771,11 +2623,12 @@ export function ProjectDetail() {
 }
 ```
 
-- [ ] **Step 8: Create `frontend/src/App.tsx`**
+- [ ] **Step 11: Create `frontend/src/App.tsx`**
 
 ```tsx
 import { Route, Routes } from "react-router-dom";
 
+import { Annotators } from "./pages/Annotators";
 import { ProjectDetail } from "./pages/ProjectDetail";
 import { ProjectList } from "./pages/ProjectList";
 
@@ -1783,32 +2636,36 @@ export function App() {
   return (
     <Routes>
       <Route path="/" element={<ProjectList />} />
+      <Route path="/annotators" element={<Annotators />} />
       <Route path="/projects/:id" element={<ProjectDetail />} />
     </Routes>
   );
 }
 ```
 
-- [ ] **Step 9: Create `frontend/src/main.tsx`**
+- [ ] **Step 12: Create `frontend/src/main.tsx`**
 
 ```tsx
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 
+import { AnnotatorProvider } from "./annotator";
 import { App } from "./App";
 import "./index.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <BrowserRouter>
-      <App />
+      <AnnotatorProvider>
+        <App />
+      </AnnotatorProvider>
     </BrowserRouter>
   </StrictMode>,
 );
 ```
 
-- [ ] **Step 10: Create `frontend/src/index.css`**
+- [ ] **Step 13: Create `frontend/src/index.css`**
 
 ```css
 :root {
@@ -1822,88 +2679,14 @@ body {
   max-width: 960px;
   margin-inline: auto;
 }
-```
 
-- [ ] **Step 11: Add `node_modules/` to `.gitignore`**
-
-Append to the repo's `.gitignore` (the existing `dist/` entry already covers `frontend/dist/` and `src/annotation_studio/static/dist/` since it has no leading slash):
-
-```
-
-# Node (annotation-studio frontend)
-node_modules/
-```
-
-- [ ] **Step 12: Install and build**
-
-```bash
-cd apps/annotation-studio/frontend
-npm install
-npm run build
-```
-
-Expected: `dist/index.html` and `dist/assets/*.js`/`*.css` produced, no TypeScript errors.
-
-- [ ] **Step 13: Commit**
-
-```bash
-cd /Users/duncanmckinnon/Documents/code/pydantic-demos
-git add apps/annotation-studio/frontend/package.json apps/annotation-studio/frontend/package-lock.json \
-  apps/annotation-studio/frontend/tsconfig.json apps/annotation-studio/frontend/tsconfig.node.json \
-  apps/annotation-studio/frontend/vite.config.ts apps/annotation-studio/frontend/index.html \
-  apps/annotation-studio/frontend/src .gitignore
-git commit -m "annotation-studio: scaffold React + TS + Vite frontend"
-```
-
----
-
-### Task 8: Project List page
-
-**Files:**
-- Modify: `apps/annotation-studio/frontend/src/pages/ProjectList.tsx`
-
-**Interfaces:**
-- Consumes: `api.listProjects` (Task 7), `types.ProjectSummary` (Task 7).
-
-- [ ] **Step 1: Implement `ProjectList.tsx`**
-
-```tsx
-import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
-
-import { listProjects } from "../api";
-import type { ProjectSummary } from "../types";
-
-export function ProjectList() {
-  const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    listProjects()
-      .then(setProjects)
-      .catch((err: unknown) => setError(String(err)));
-  }, []);
-
-  if (error) return <p className="error">{error}</p>;
-  if (projects === null) return <p>Loading…</p>;
-
-  return (
-    <div className="project-list">
-      <h1>Annotation Studio</h1>
-      {projects.map((project) => (
-        <Link key={project.id} to={`/projects/${project.id}`} className="project-card">
-          <h2>{project.name}</h2>
-          <p>Source agent: {project.top_level_agent_name}</p>
-        </Link>
-      ))}
-    </div>
-  );
+.app-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
 }
-```
 
-- [ ] **Step 2: Add card styling** — append to `frontend/src/index.css`
-
-```css
 .project-card {
   display: block;
   border: 1px solid #8884;
@@ -1913,60 +2696,135 @@ export function ProjectList() {
   text-decoration: none;
   color: inherit;
 }
+
+.annotator-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.annotator-row button.selected {
+  background: #4a90d9;
+  color: white;
+}
+
+.error {
+  color: #d9534f;
+}
 ```
 
-- [ ] **Step 3: Build and manually verify**
+- [ ] **Step 14: Add `node_modules/` to `.gitignore`**
+
+Append to the repo's `.gitignore` (the existing `dist/` entry already covers `frontend/dist/`
+and `src/annotation_studio/static/dist/` since it has no leading slash):
+
+```
+
+# Node (annotation-studio frontend)
+node_modules/
+
+# annotation-studio local SQLite data
+apps/annotation-studio/data/
+```
+
+- [ ] **Step 15: Install and build**
 
 ```bash
 cd apps/annotation-studio/frontend
+npm install
 npm run build
 ```
 
-Then, with the backend running (`uv run --package annotation-studio uvicorn annotation_studio.main:app --reload` from the repo root, in a separate terminal, after `cp apps/annotation-studio/.env.example apps/annotation-studio/.env` and filling in real tokens) and `npm run dev` in this directory, open `http://localhost:5173` and confirm the seeded `rx-assistant` project card renders and links to `/projects/1`.
+Expected: `dist/index.html` and `dist/assets/*.js`/`*.css` produced, no TypeScript errors.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 16: Commit**
 
 ```bash
-git add apps/annotation-studio/frontend/src/pages/ProjectList.tsx apps/annotation-studio/frontend/src/index.css
-git commit -m "annotation-studio: implement project list page"
+cd /Users/duncanmckinnon/Documents/code/pydantic-demos
+git add apps/annotation-studio/frontend/package.json apps/annotation-studio/frontend/package-lock.json \
+  apps/annotation-studio/frontend/tsconfig.json apps/annotation-studio/frontend/tsconfig.node.json \
+  apps/annotation-studio/frontend/vite.config.ts apps/annotation-studio/frontend/index.html \
+  apps/annotation-studio/frontend/src .gitignore
+git commit -m "annotation-studio: scaffold frontend with annotator selection"
 ```
 
 ---
 
-### Task 9: Project Detail — criteria, agent name, and label editors
+### Task 7: Project detail and grading UI
 
 **Files:**
-- Create: `apps/annotation-studio/frontend/src/components/CriteriaEditor.tsx`
-- Create: `apps/annotation-studio/frontend/src/components/LabelEditor.tsx`
+- Create: `apps/annotation-studio/frontend/src/components/ProjectEditor.tsx`
+- Create: `apps/annotation-studio/frontend/src/components/InteractionRow.tsx`
 - Modify: `apps/annotation-studio/frontend/src/pages/ProjectDetail.tsx`
+- Modify: `apps/annotation-studio/frontend/src/index.css`
 
 **Interfaces:**
-- Consumes: `api.getProject`, `api.updateProject` (Task 7), `types.Project`, `types.Label` (Task 7).
-- Produces: `ProjectDetail`'s `project` state, passed to Task 10/11's interaction list and `InteractionRow`.
+- Consumes: `api.getProject`, `api.updateProject`, `api.listInteractions`,
+  `api.upsertAnnotation` (Task 6), `useAnnotator()` (Task 6).
 
-- [ ] **Step 1: Create `components/CriteriaEditor.tsx`** (bundles the criteria textarea with the agent-name field — see plan's "Corrections to the Approved Spec" #2: the spec requires this field be editable-and-validated but never wired it into any UI control)
+- [ ] **Step 1: Create `components/ProjectEditor.tsx`** (criteria + agent name + stable-id
+  label editor, one atomic Save)
 
 ```tsx
 import { useState } from "react";
 
+import type { Label } from "../types";
+
+interface LabelDraft {
+  id: number | null;
+  name: string;
+}
+
 interface Props {
   initialCriteriaText: string;
   initialAgentName: string;
-  onSave: (values: { criteria_text: string; top_level_agent_name: string }) => Promise<void>;
+  initialLabels: Label[];
+  onSave: (values: { criteria_text: string; top_level_agent_name: string; labels: LabelDraft[] }) => Promise<void>;
 }
 
-export function CriteriaEditor({ initialCriteriaText, initialAgentName, onSave }: Props) {
+export function ProjectEditor({ initialCriteriaText, initialAgentName, initialLabels, onSave }: Props) {
   const [criteriaText, setCriteriaText] = useState(initialCriteriaText);
   const [agentName, setAgentName] = useState(initialAgentName);
+  const [labels, setLabels] = useState<LabelDraft[]>(initialLabels.map((l) => ({ id: l.id, name: l.name })));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const updateLabelName = (index: number, name: string) =>
+    setLabels((prev) => prev.map((l, i) => (i === index ? { ...l, name } : l)));
+
+  const removeLabel = (index: number) => setLabels((prev) => prev.filter((_, i) => i !== index));
+
+  const moveUp = (index: number) =>
+    setLabels((prev) => {
+      if (index === 0) return prev;
+      const next = [...prev];
+      [next[index - 1], next[index]] = [next[index], next[index - 1]];
+      return next;
+    });
+
+  const moveDown = (index: number) =>
+    setLabels((prev) => {
+      if (index === prev.length - 1) return prev;
+      const next = [...prev];
+      [next[index], next[index + 1]] = [next[index + 1], next[index]];
+      return next;
+    });
+
+  const addLabel = () => setLabels((prev) => [...prev, { id: null, name: "New label" }]);
 
   const handleSave = async () => {
     setSaving(true);
     setError(null);
     try {
-      await onSave({ criteria_text: criteriaText, top_level_agent_name: agentName });
+      await onSave({
+        criteria_text: criteriaText,
+        top_level_agent_name: agentName,
+        labels: labels.map((l) => ({ ...l, name: l.name.trim() })).filter((l) => l.name.length > 0),
+      });
     } catch (err) {
+      // Deliberately does not replace loaded state on error — the reviewer's edits stay
+      // in the form so a rejected save (400/409) doesn't lose their in-progress changes.
       setError(String(err));
     } finally {
       setSaving(false);
@@ -1974,17 +2832,27 @@ export function CriteriaEditor({ initialCriteriaText, initialAgentName, onSave }
   };
 
   return (
-    <section className="criteria-editor">
+    <section className="project-editor">
       <label htmlFor="agent-name">Source agent name (Logfire span name suffix)</label>
       <input id="agent-name" value={agentName} onChange={(e) => setAgentName(e.target.value)} />
 
       <label htmlFor="criteria-text">Grading criteria</label>
-      <textarea
-        id="criteria-text"
-        rows={8}
-        value={criteriaText}
-        onChange={(e) => setCriteriaText(e.target.value)}
-      />
+      <textarea id="criteria-text" rows={8} value={criteriaText} onChange={(e) => setCriteriaText(e.target.value)} />
+
+      <h3>Labels</h3>
+      {labels.map((label, index) => (
+        <div key={label.id ?? `new-${index}`} className="label-row">
+          <input value={label.name} onChange={(e) => updateLabelName(index, e.target.value)} />
+          <button onClick={() => moveUp(index)} disabled={index === 0}>
+            ↑
+          </button>
+          <button onClick={() => moveDown(index)} disabled={index === labels.length - 1}>
+            ↓
+          </button>
+          <button onClick={() => removeLabel(index)}>Remove</button>
+        </div>
+      ))}
+      <button onClick={addLabel}>Add label</button>
 
       <button onClick={handleSave} disabled={saving}>
         {saving ? "Saving…" : "Save"}
@@ -1995,208 +2863,21 @@ export function CriteriaEditor({ initialCriteriaText, initialAgentName, onSave }
 }
 ```
 
-- [ ] **Step 2: Create `components/LabelEditor.tsx`**
+- [ ] **Step 2: Create `components/InteractionRow.tsx`** (markdown input/output, raw-attribute
+  fallback, full transcript, trace link, label picker, description, write-back status, save)
 
 ```tsx
-import { useState } from "react";
-
-import type { Label } from "../types";
-
-interface Props {
-  initialLabels: Label[];
-  onSave: (names: string[]) => Promise<void>;
-}
-
-export function LabelEditor({ initialLabels, onSave }: Props) {
-  const [names, setNames] = useState(initialLabels.map((label) => label.name));
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const updateName = (index: number, value: string) =>
-    setNames((prev) => prev.map((n, i) => (i === index ? value : n)));
-
-  const removeAt = (index: number) => setNames((prev) => prev.filter((_, i) => i !== index));
-
-  const moveUp = (index: number) =>
-    setNames((prev) => {
-      if (index === 0) return prev;
-      const next = [...prev];
-      [next[index - 1], next[index]] = [next[index], next[index - 1]];
-      return next;
-    });
-
-  const moveDown = (index: number) =>
-    setNames((prev) => {
-      if (index === prev.length - 1) return prev;
-      const next = [...prev];
-      [next[index], next[index + 1]] = [next[index + 1], next[index]];
-      return next;
-    });
-
-  const addLabel = () => setNames((prev) => [...prev, "New label"]);
-
-  const handleSave = async () => {
-    setSaving(true);
-    setError(null);
-    try {
-      await onSave(names.map((n) => n.trim()).filter((n) => n.length > 0));
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <section className="label-editor">
-      <h3>Labels</h3>
-      {names.map((name, index) => (
-        <div key={index} className="label-row">
-          <input value={name} onChange={(e) => updateName(index, e.target.value)} />
-          <button onClick={() => moveUp(index)} disabled={index === 0}>
-            ↑
-          </button>
-          <button onClick={() => moveDown(index)} disabled={index === names.length - 1}>
-            ↓
-          </button>
-          <button onClick={() => removeAt(index)}>Remove</button>
-        </div>
-      ))}
-      <button onClick={addLabel}>Add label</button>
-      <button onClick={handleSave} disabled={saving}>
-        {saving ? "Saving…" : "Save labels"}
-      </button>
-      {error && <p className="error">{error}</p>}
-    </section>
-  );
-}
-```
-
-- [ ] **Step 3: Implement `pages/ProjectDetail.tsx`** (interaction list wired in Task 10 — for now, render the editors only)
-
-```tsx
-import { useCallback, useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
-
-import { getProject, updateProject } from "../api";
-import { CriteriaEditor } from "../components/CriteriaEditor";
-import { LabelEditor } from "../components/LabelEditor";
-import type { Project } from "../types";
-
-export function ProjectDetail() {
-  const { id } = useParams<{ id: string }>();
-  const projectId = Number(id);
-
-  const [project, setProject] = useState<Project | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const loadProject = useCallback(() => {
-    getProject(projectId)
-      .then(setProject)
-      .catch((err: unknown) => setError(String(err)));
-  }, [projectId]);
-
-  useEffect(() => {
-    loadProject();
-  }, [loadProject]);
-
-  if (error) return <p className="error">{error}</p>;
-  if (project === null) return <p>Loading…</p>;
-
-  return (
-    <div className="project-detail">
-      <h1>{project.name}</h1>
-      <CriteriaEditor
-        initialCriteriaText={project.criteria_text}
-        initialAgentName={project.top_level_agent_name}
-        onSave={async (values) => {
-          const updated = await updateProject(projectId, values);
-          setProject(updated);
-        }}
-      />
-      <LabelEditor
-        initialLabels={project.labels}
-        onSave={async (names) => {
-          const updated = await updateProject(projectId, { label_names: names });
-          setProject(updated);
-        }}
-      />
-    </div>
-  );
-}
-```
-
-- [ ] **Step 4: Add editor styling** — append to `frontend/src/index.css`
-
-```css
-.criteria-editor,
-.label-editor {
-  border: 1px solid #8884;
-  border-radius: 8px;
-  padding: 1rem;
-  margin-bottom: 1.5rem;
-}
-
-.criteria-editor textarea,
-.criteria-editor input,
-.label-editor input {
-  width: 100%;
-  box-sizing: border-box;
-  margin-bottom: 0.5rem;
-}
-
-.label-row {
-  display: flex;
-  gap: 0.5rem;
-  align-items: center;
-  margin-bottom: 0.25rem;
-}
-
-.error {
-  color: #d9534f;
-}
-```
-
-- [ ] **Step 5: Build and manually verify**
-
-```bash
-cd apps/annotation-studio/frontend
-npm run build
-```
-
-With backend + `npm run dev` running, open `http://localhost:5173/projects/1`, edit the criteria text and agent name, click Save, reload the page, and confirm the values persisted. Try adding/removing/reordering labels and confirm the same.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add apps/annotation-studio/frontend/src/components/CriteriaEditor.tsx \
-  apps/annotation-studio/frontend/src/components/LabelEditor.tsx \
-  apps/annotation-studio/frontend/src/pages/ProjectDetail.tsx apps/annotation-studio/frontend/src/index.css
-git commit -m "annotation-studio: implement criteria, agent name, and label editors"
-```
-
----
-
-### Task 10: Interaction list with expand/collapse and full conversation
-
-**Files:**
-- Create: `apps/annotation-studio/frontend/src/components/InteractionRow.tsx`
-- Modify: `apps/annotation-studio/frontend/src/pages/ProjectDetail.tsx`
-
-**Interfaces:**
-- Consumes: `api.listInteractions` (Task 7), `types.Interaction`/`types.Message`/`types.MessagePart` (Task 7).
-- Produces: `InteractionRow` component (read-only in this task — label picker/description save wired in Task 11).
-
-- [ ] **Step 1: Add `react-markdown` rendering + full-conversation transcript to `components/InteractionRow.tsx`**
-
-```tsx
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 
-import type { Interaction, Message, MessagePart } from "../types";
+import { upsertAnnotation } from "../api";
+import type { Interaction, Label, Message, MessagePart } from "../types";
 
 interface Props {
+  projectId: number;
+  annotatorId: number;
   interaction: Interaction;
+  labels: Label[];
 }
 
 function renderPart(part: MessagePart, key: number) {
@@ -2219,15 +2900,48 @@ function renderMessage(message: Message, key: number) {
   );
 }
 
-export function InteractionRow({ interaction }: Props) {
+export function InteractionRow({ projectId, annotatorId, interaction, labels }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [showFullConversation, setShowFullConversation] = useState(false);
+  const [labelId, setLabelId] = useState<number | null>(interaction.annotation?.label_id ?? null);
+  const [description, setDescription] = useState(interaction.annotation?.description ?? "");
+  const [saved, setSaved] = useState(interaction.annotation);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // The interaction/annotator this row shows can change (pagination reload, switching
+    // annotator) — resync local edit state to the freshly-loaded annotation each time.
+    setLabelId(interaction.annotation?.label_id ?? null);
+    setDescription(interaction.annotation?.description ?? "");
+    setSaved(interaction.annotation);
+  }, [interaction, annotatorId]);
+
+  const currentLabelName = labels.find((l) => l.id === saved?.label_id)?.name ?? "Ungraded";
+
+  const handleSaveAnnotation = async () => {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const result = await upsertAnnotation(projectId, interaction.trace_id, interaction.span_id, {
+        annotator_id: annotatorId,
+        label_id: labelId,
+        description,
+      });
+      setSaved(result);
+    } catch (err) {
+      setSaveError(String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div className="interaction-row">
       <button className="interaction-summary" onClick={() => setExpanded((v) => !v)}>
         <span className="timestamp">{new Date(interaction.start_timestamp).toLocaleString()}</span>
         <span className="preview">{interaction.input_text.slice(0, 120)}</span>
+        <span className="label-badge">{currentLabelName}</span>
       </button>
 
       {expanded && (
@@ -2256,6 +2970,36 @@ export function InteractionRow({ interaction }: Props) {
             </>
           )}
 
+          <h4>Grade</h4>
+          <div className="label-picker">
+            {labels.map((label) => (
+              <button
+                key={label.id}
+                className={labelId === label.id ? "selected" : ""}
+                onClick={() => setLabelId(label.id)}
+              >
+                {label.name}
+              </button>
+            ))}
+          </div>
+          <textarea
+            rows={4}
+            placeholder="Why this label?"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+          />
+          <button onClick={handleSaveAnnotation} disabled={saving}>
+            {saving ? "Saving…" : "Save annotation"}
+          </button>
+          {saveError && <p className="error">{saveError}</p>}
+
+          {saved?.writeback_status === "failed" && (
+            <p className="writeback-warning">
+              Grade saved locally, but Logfire write-back failed: {saved.writeback_error}
+            </p>
+          )}
+          {saved?.writeback_status === "written" && <p className="writeback-ok">Written to Logfire</p>}
+
           <a href={interaction.trace_url} target="_blank" rel="noopener noreferrer">
             Open trace in Logfire ↗
           </a>
@@ -2266,27 +3010,41 @@ export function InteractionRow({ interaction }: Props) {
 }
 ```
 
-- [ ] **Step 2: Wire the interaction list and pagination into `pages/ProjectDetail.tsx`** — add these imports and state/effects, and render the list below the `LabelEditor`
-
-Add imports:
+- [ ] **Step 3: Implement `pages/ProjectDetail.tsx`** (gates on a selected annotator; resets
+  interactions when project or annotator changes)
 
 ```tsx
-import { listInteractions } from "../api";
+import { useCallback, useEffect, useState } from "react";
+import { Navigate, useParams } from "react-router-dom";
+
+import { getProject, listInteractions, updateProject } from "../api";
+import { useAnnotator } from "../annotator";
 import { InteractionRow } from "../components/InteractionRow";
+import { ProjectEditor } from "../components/ProjectEditor";
 import type { Interaction, Project } from "../types";
-```
 
-Add inside the component, alongside the existing `project`/`error` state:
+export function ProjectDetail() {
+  const { id } = useParams<{ id: string }>();
+  const projectId = Number(id);
+  const { selectedId } = useAnnotator();
 
-```tsx
+  const [project, setProject] = useState<Project | null>(null);
   const [interactions, setInteractions] = useState<Interaction[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadProject = useCallback(() => {
+    getProject(projectId)
+      .then(setProject)
+      .catch((err: unknown) => setError(String(err)));
+  }, [projectId]);
 
   const loadInteractions = useCallback(
     (cursor: string | null) => {
+      if (selectedId === null) return;
       setLoading(true);
-      listInteractions(projectId, cursor)
+      listInteractions(projectId, selectedId, cursor)
         .then((page) => {
           setInteractions((prev) => (cursor ? [...prev, ...page.items] : page.items));
           setNextCursor(page.next_cursor);
@@ -2294,36 +3052,83 @@ Add inside the component, alongside the existing `project`/`error` state:
         .catch((err: unknown) => setError(String(err)))
         .finally(() => setLoading(false));
     },
-    [projectId],
+    [projectId, selectedId],
   );
-```
 
-Update the load-on-mount effect to also load the first page:
-
-```tsx
   useEffect(() => {
     loadProject();
+  }, [loadProject]);
+
+  useEffect(() => {
+    // Re-fetch from page 1 whenever the project or the selected annotator changes — a
+    // different annotator has different existing grades merged into each interaction.
+    setInteractions([]);
+    setNextCursor(null);
     loadInteractions(null);
-  }, [loadProject, loadInteractions]);
-```
+  }, [projectId, selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-Add below the `LabelEditor` in the returned JSX:
+  if (selectedId === null) return <Navigate to="/annotators" replace />;
+  if (error) return <p className="error">{error}</p>;
+  if (project === null) return <p>Loading…</p>;
 
-```tsx
+  return (
+    <div className="project-detail">
+      <h1>{project.name}</h1>
+      <ProjectEditor
+        initialCriteriaText={project.criteria_text}
+        initialAgentName={project.top_level_agent_name}
+        initialLabels={project.labels}
+        onSave={async (values) => {
+          const updated = await updateProject(projectId, values);
+          setProject(updated);
+        }}
+      />
+
       <h2>Interactions</h2>
       {interactions.map((interaction) => (
-        <InteractionRow key={`${interaction.trace_id}:${interaction.span_id}`} interaction={interaction} />
+        <InteractionRow
+          key={`${interaction.trace_id}:${interaction.span_id}`}
+          projectId={projectId}
+          annotatorId={selectedId}
+          interaction={interaction}
+          labels={project.labels}
+        />
       ))}
       {nextCursor && (
         <button onClick={() => loadInteractions(nextCursor)} disabled={loading}>
           {loading ? "Loading…" : "Load more"}
         </button>
       )}
+    </div>
+  );
+}
 ```
 
-- [ ] **Step 3: Add interaction-row styling** — append to `frontend/src/index.css`
+- [ ] **Step 4: Add styling** — append to `frontend/src/index.css`
 
 ```css
+.project-editor {
+  border: 1px solid #8884;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.project-editor textarea,
+.project-editor input,
+.label-row input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 0.5rem;
+}
+
+.label-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.25rem;
+}
+
 .interaction-row {
   border: 1px solid #8884;
   border-radius: 8px;
@@ -2349,6 +3154,13 @@ Add below the `LabelEditor` in the returned JSX:
   white-space: nowrap;
 }
 
+.label-badge {
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: #8882;
+  font-size: 0.85em;
+}
+
 .interaction-detail {
   padding: 0 1rem 1rem;
 }
@@ -2366,141 +3178,6 @@ Add below the `LabelEditor` in the returned JSX:
   white-space: pre-wrap;
   word-break: break-word;
 }
-```
-
-- [ ] **Step 4: Build and manually verify**
-
-```bash
-cd apps/annotation-studio/frontend
-npm run build
-```
-
-With backend + `npm run dev` running against a real `RX_ASSISTANT_LOGFIRE_READ_TOKEN`, open `http://localhost:5173/projects/1` and confirm real interactions load, expand to show input/output markdown, "View full conversation" shows the transcript, "Load more" fetches an older page, and the trace link opens the right trace in a new tab.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add apps/annotation-studio/frontend/src/components/InteractionRow.tsx \
-  apps/annotation-studio/frontend/src/pages/ProjectDetail.tsx apps/annotation-studio/frontend/src/index.css
-git commit -m "annotation-studio: implement interaction list with expand and full conversation"
-```
-
----
-
-### Task 11: Label picker and annotation save
-
-**Files:**
-- Modify: `apps/annotation-studio/frontend/src/components/InteractionRow.tsx`
-- Modify: `apps/annotation-studio/frontend/src/pages/ProjectDetail.tsx`
-
-**Interfaces:**
-- Consumes: `api.upsertAnnotation` (Task 7), `types.Label` (Task 7).
-
-- [ ] **Step 1: Add the label picker, description textarea, save, and current-label badge to `InteractionRow.tsx`**
-
-Add to the imports:
-
-```tsx
-import { upsertAnnotation } from "../api";
-import type { Label } from "../types";
-```
-
-Change the `Props` interface and function signature:
-
-```tsx
-interface Props {
-  projectId: number;
-  interaction: Interaction;
-  labels: Label[];
-}
-
-export function InteractionRow({ projectId, interaction, labels }: Props) {
-```
-
-Add state below the existing `expanded`/`showFullConversation` state:
-
-```tsx
-  const [labelId, setLabelId] = useState<number | null>(interaction.annotation?.label_id ?? null);
-  const [description, setDescription] = useState(interaction.annotation?.description ?? "");
-  const [savedLabelId, setSavedLabelId] = useState<number | null>(interaction.annotation?.label_id ?? null);
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-
-  const currentLabelName = labels.find((l) => l.id === savedLabelId)?.name ?? "Ungraded";
-
-  const handleSaveAnnotation = async () => {
-    setSaving(true);
-    setSaveError(null);
-    try {
-      await upsertAnnotation(projectId, interaction.trace_id, interaction.span_id, {
-        label_id: labelId,
-        description,
-      });
-      setSavedLabelId(labelId);
-    } catch (err) {
-      setSaveError(String(err));
-    } finally {
-      setSaving(false);
-    }
-  };
-```
-
-Add the current-label badge to the collapsed summary button (inside `.interaction-summary`, after `.preview`):
-
-```tsx
-        <span className="label-badge">{currentLabelName}</span>
-```
-
-Add the grading UI at the end of the expanded `.interaction-detail` block, right before the "Open trace in Logfire" link:
-
-```tsx
-          <h4>Grade</h4>
-          <div className="label-picker">
-            {labels.map((label) => (
-              <button
-                key={label.id}
-                className={labelId === label.id ? "selected" : ""}
-                onClick={() => setLabelId(label.id)}
-              >
-                {label.name}
-              </button>
-            ))}
-          </div>
-          <textarea
-            rows={4}
-            placeholder="Why this label?"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-          />
-          <button onClick={handleSaveAnnotation} disabled={saving}>
-            {saving ? "Saving…" : "Save annotation"}
-          </button>
-          {saveError && <p className="error">{saveError}</p>}
-
-```
-
-- [ ] **Step 2: Pass `projectId` and `labels` from `ProjectDetail.tsx`**
-
-```tsx
-      {interactions.map((interaction) => (
-        <InteractionRow
-          key={`${interaction.trace_id}:${interaction.span_id}`}
-          projectId={projectId}
-          interaction={interaction}
-          labels={project.labels}
-        />
-      ))}
-```
-
-- [ ] **Step 3: Add label-picker/badge styling** — append to `frontend/src/index.css`
-
-```css
-.label-badge {
-  padding: 0.15rem 0.5rem;
-  border-radius: 999px;
-  background: #8882;
-  font-size: 0.85em;
-}
 
 .label-picker {
   display: flex;
@@ -2512,38 +3189,56 @@ Add the grading UI at the end of the expanded `.interaction-detail` block, right
   background: #4a90d9;
   color: white;
 }
+
+.writeback-warning {
+  color: #b8860b;
+}
+
+.writeback-ok {
+  color: #2e7d32;
+  font-size: 0.9em;
+}
 ```
 
-- [ ] **Step 4: Build and manually verify**
+- [ ] **Step 5: Build and manually verify**
 
 ```bash
 cd apps/annotation-studio/frontend
 npm run build
 ```
 
-With backend + `npm run dev` running, expand an interaction, pick a label, write a description, click "Save annotation," collapse and re-expand the row, and confirm the badge and picker reflect the saved state. Reload the page entirely and confirm it's still there (came back from SQLite via `GET /api/projects/{id}/interactions`).
+With the backend running (`cp apps/annotation-studio/.env.example apps/annotation-studio/.env`,
+fill in real tokens, then `uv run --package annotation-studio uvicorn annotation_studio.main:app
+--reload` in one terminal) and `npm run dev` in this directory: create two annotator profiles,
+grade the same interaction differently as each, confirm the badge/picker reflect only the
+active annotator's grade, rename a label already in use and confirm annotations keep pointing
+at it, and confirm a real write-back shows "Written to Logfire" (check the trace in the Logfire
+UI for the child `annotation_studio.annotation` entry).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add apps/annotation-studio/frontend/src/components/InteractionRow.tsx \
+git add apps/annotation-studio/frontend/src/components/ProjectEditor.tsx \
+  apps/annotation-studio/frontend/src/components/InteractionRow.tsx \
   apps/annotation-studio/frontend/src/pages/ProjectDetail.tsx apps/annotation-studio/frontend/src/index.css
-git commit -m "annotation-studio: implement label picker and annotation save"
+git commit -m "annotation-studio: implement project editor and reviewer grading UI"
 ```
 
 ---
 
-### Task 12: Dockerfile, Compose service, and final integration check
+### Task 8: Dockerfile, Compose service, and final integration check
 
 **Files:**
 - Create: `apps/annotation-studio/Dockerfile`
 - Modify: `docker-compose.yml`
-- Modify: `.gitignore`
 
 **Interfaces:**
-- None — this task wires existing pieces (Tasks 1–11) into the repo's Docker/Compose conventions and runs the full verification checklist.
+- None — this task wires existing pieces (Tasks 1–7) into the repo's Docker/Compose
+  conventions and runs the full verification checklist.
 
-- [ ] **Step 1: Create `apps/annotation-studio/Dockerfile`** (multi-stage: build the frontend, then copy its `dist/` into the Python image — the build context is the repo root, per `add-demo`'s convention, so `demo_core`'s path dependency resolves)
+- [ ] **Step 1: Create `apps/annotation-studio/Dockerfile`** (multi-stage: build the frontend,
+  then copy its `dist/` into the Python image — the build context is the repo root, per
+  `add-demo`'s convention, so `demo_core`'s path dependency resolves)
 
 ```dockerfile
 FROM node:20-slim AS frontend-build
@@ -2571,7 +3266,9 @@ CMD ["uv", "run", "--package", "annotation-studio", "uvicorn", \
      "annotation_studio.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
-- [ ] **Step 2: Add the service to `docker-compose.yml`** (append at the end, before the top-level `volumes:` key — merge with the existing `volumes:` block if one already exists there)
+- [ ] **Step 2: Add the service to `docker-compose.yml`** (append at the end, before the
+  top-level `volumes:` key — merge with the existing `volumes:` block if one already exists
+  there)
 
 ```yaml
   annotation-studio:
@@ -2592,15 +3289,7 @@ Add to the top-level `volumes:` block:
   annotation_studio_data:
 ```
 
-- [ ] **Step 3: Ignore the local SQLite data directory** — append to `.gitignore`
-
-```
-
-# annotation-studio local SQLite data
-apps/annotation-studio/data/
-```
-
-- [ ] **Step 4: Run the full verification checklist**
+- [ ] **Step 3: Run the full verification checklist**
 
 ```bash
 uv sync --all-packages
@@ -2608,14 +3297,28 @@ uv run pytest apps/annotation-studio/tests/ -v
 cd apps/annotation-studio/frontend && npm run build && cd /Users/duncanmckinnon/Documents/code/pydantic-demos
 cp apps/annotation-studio/.env.example apps/annotation-studio/.env
 docker compose --profile annotation-studio config
+docker compose --profile annotation-studio build annotation-studio
 ```
 
-Expected: all backend tests pass, frontend builds cleanly, and `docker compose config` resolves the `annotation-studio` service (and its `annotation_studio_data` volume) without error. `apps/annotation-studio/.env` now exists locally (gitignored) with empty credential values — fill in real `LOGFIRE_TOKEN` and `RX_ASSISTANT_LOGFIRE_READ_TOKEN` before actually running the container.
+Expected: all backend tests pass, frontend builds cleanly, `docker compose config` resolves
+the `annotation-studio` service (and its `annotation_studio_data` volume) without error, and
+the image builds successfully. `apps/annotation-studio/.env` now exists locally (gitignored)
+with empty credential values — fill in real `LOGFIRE_TOKEN`, `RX_ASSISTANT_LOGFIRE_READ_TOKEN`,
+and `RX_ASSISTANT_LOGFIRE_WRITE_TOKEN` before actually running the container.
+
+- [ ] **Step 4: Manual end-to-end check with real credentials**
+
+With real gitignored tokens in place, run the app (Docker or local dev), create an annotator,
+grade an interaction, then grade the *same* interaction again with a different label (revision
+2). In the Logfire UI, open the source trace and confirm two `annotation_studio.annotation`
+child entries exist under the graded `invoke_agent` span with distinct, stable event keys,
+correct annotator tags, and that switching to a second annotator profile shows an independent,
+initially-ungraded state for the same interaction.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/annotation-studio/Dockerfile docker-compose.yml .gitignore
+git add apps/annotation-studio/Dockerfile docker-compose.yml
 git commit -m "annotation-studio: add Dockerfile and Compose service"
 ```
 
@@ -2623,419 +3326,20 @@ git commit -m "annotation-studio: add Dockerfile and Compose service"
 
 ## Self-Review
 
-**Spec coverage:**
-- One fixed source project, read-only, no auth → Tasks 1–2 (seeded project, no auth anywhere). ✓
-- SQLite schema (projects/labels/annotations) → Task 2. ✓
-- `AsyncLogfireQueryClient` read-token query, pagination, 14-day window → Task 4. ✓
-- `top_level_agent_name` validation against SQL-injection → Task 3 (`validate_agent_name`), enforced in Task 4's query and Task 5's `PUT /api/projects/{id}`. ✓
-- Input/output extraction rule, scrubbed-value pass-through, raw-attributes fallback → Task 3, corrected per real span data (see "Corrections to the Approved Spec"). ✓
-- Trace link built from token's own `info()` + `base_url` → Task 4 (`build_trace_link`). ✓
-- No write-back, no annotation-queue integration → never implemented anywhere in this plan; called out in Global Constraints. ✓
-- Architecture file layout → matches Tasks 1–12's file list exactly. ✓
-- API surface (`GET/PUT /api/projects`, `GET .../interactions`, `PUT .../annotations/...`) → Tasks 5–6. ✓
-- Frontend pages (project list, project detail with criteria/labels/interactions/expand/full-conversation/label-picker/description/trace-link) → Tasks 7–11. ✓
-- Frontend build deviation (multi-stage Dockerfile, two-process local dev) → Tasks 7, 12. ✓
-- Settings (`SourceSettings`, `AppSettings`, `.env.example`) → Task 1. ✓
-- Docker Compose service/volume/profile/port → Task 12. ✓
-- Dependencies (`demo-core`, `logfire` explicit, `fastapi`, `uvicorn[standard]`, `python-dotenv`, no `pydantic-ai`/`pydantic-evals`/`jinja2`) → Task 1's `pyproject.toml`. ✓
-- Testing conventions (conftest dummy env + temp-file DB path, no `tests/__init__.py`, monkeypatched Logfire query, `npm run build` as the frontend gate) → Task 1's conftest, Tasks 4/6's monkeypatching, Task 7's note. ✓
-
-**Placeholder scan:** No TBD/TODO markers; every step has runnable code or an exact shell command; no "similar to Task N" references — repeated context (e.g., fixture-based tests, monkeypatching pattern) is written out in full each time.
-
-**Type consistency:** `Interaction` dataclass fields (Task 3) match `asdict(interaction)` usage in Task 6's route and `types.ts`'s `Interaction` interface (Task 7) field-for-field, including the later-added `raw_attributes`. `fetch_project_interactions`'s signature (Task 4) matches every monkeypatch call in Task 6's tests. `ProjectUpdateRequest`/`AnnotationUpdateRequest` field names match `api.ts`'s `updateProject`/`upsertAnnotation` payload shapes and the `CriteriaEditor`/`LabelEditor`/`InteractionRow` components' `onSave` calls.
-
----
-
-## Approved Revision Addendum (Authoritative)
-
-This addendum preserves the original task-level code, fixtures, UI examples, rationale, and
-verification context above while replacing the assumptions affected by design review. When
-anything above conflicts with this addendum or the linked spec, this addendum and spec take
-precedence. Execute these replacement tasks instead of original Tasks 1–12, reusing unchanged
-fixtures and presentation code from the mapped original tasks.
-
-## Revised Global Constraints
-
-- No auth; annotator profiles are local identities.
-- SQLite is authoritative; Logfire write-back is append-only.
-- Use distinct `LOGFIRE_TOKEN`, `RX_ASSISTANT_LOGFIRE_READ_TOKEN`, and `RX_ASSISTANT_LOGFIRE_WRITE_TOKEN` values.
-- Configure the writer with `logfire.configure(local=True, token=write_token, service_name="annotation-studio-writeback")`; never replace global app telemetry configuration.
-- Validate agent names against `^[A-Za-z0-9_]+$` before storage and SQL interpolation.
-- Tests never call real Logfire APIs and must not add `tests/__init__.py`.
-- Project updates are atomic, label IDs remain stable, and annotation labels must belong to their project.
-- Pagination is exclusive keyset pagination over `(start_timestamp, span_id)`.
-- Frontend correctness gates are `npm run build` and manual browser verification.
-
----
-
-### Replacement Task 1: Package and settings
-
-**Files:** Create `apps/annotation-studio/pyproject.toml`, `.env.example`, `src/annotation_studio/__init__.py`, `src/annotation_studio/settings.py`, `tests/conftest.py`, and `tests/test_settings.py`.
-
-**Interfaces:** Produces `SourceSettings(read_token, write_token, top_level_agent_name)` and `AppSettings(database_path)`.
-
-- [ ] **Step 1: Write failing settings tests**
-
-```python
-def test_source_settings_reads_separate_tokens(monkeypatch):
-    monkeypatch.setenv("RX_ASSISTANT_LOGFIRE_READ_TOKEN", "read")
-    monkeypatch.setenv("RX_ASSISTANT_LOGFIRE_WRITE_TOKEN", "write")
-    value = SourceSettings()
-    assert (value.read_token, value.write_token) == ("read", "write")
-    assert value.top_level_agent_name == "rx_assistant_agent"
-
-def test_app_settings_default(monkeypatch):
-    monkeypatch.delenv("ANNOTATION_STUDIO_DATABASE_PATH", raising=False)
-    assert AppSettings().database_path == "data/annotation_studio.sqlite3"
-```
-
-Also parametrize a test deleting each source token and expecting `pydantic.ValidationError`.
-
-- [ ] **Step 2: Run `uv run pytest apps/annotation-studio/tests/test_settings.py -v` and confirm import failure.**
-
-- [ ] **Step 3: Implement settings**
-
-```python
-class SourceSettings(BaseSettings):
-    model_config = SettingsConfigDict(extra="ignore")
-    read_token: str = Field(validation_alias="RX_ASSISTANT_LOGFIRE_READ_TOKEN")
-    write_token: str = Field(validation_alias="RX_ASSISTANT_LOGFIRE_WRITE_TOKEN")
-    top_level_agent_name: str = "rx_assistant_agent"
-
-class AppSettings(BaseSettings):
-    model_config = SettingsConfigDict(extra="ignore")
-    database_path: str = Field(default="data/annotation_studio.sqlite3",
-                               validation_alias="ANNOTATION_STUDIO_DATABASE_PATH")
-```
-
-Use the dependency/build configuration from the spec. Load the app `.env` in `__init__.py` with `override=False`. In `conftest.py`, force dummy values for all three tokens, force `LOGFIRE_SEND_TO_LOGFIRE=false`, set a temporary database path, and configure Logfire offline; never use `setdefault`.
-
-- [ ] **Step 4: Run `uv sync --all-packages && uv run pytest apps/annotation-studio/tests/test_settings.py -v`.**
-
-- [ ] **Step 5: Commit with `git commit -m "annotation-studio: scaffold settings and credentials"`.**
-
----
-
-### Replacement Task 2: Transactional SQLite model
-
-**Files:** Create `src/annotation_studio/db.py` and `tests/test_db.py`.
-
-**Interfaces:** Produces schema/connection helpers, project and stable-label CRUD, annotator CRUD, annotator-scoped annotation upserts, and write-back status updates.
-
-- [ ] **Step 1: Write failing database tests**
-
-```python
-def test_two_annotators_grade_same_interaction(conn):
-    project, label = seeded_project_and_label(conn)
-    ada = db.create_annotator(conn, "Ada")
-    grace = db.create_annotator(conn, "Grace")
-    a = db.upsert_annotation(conn, project["id"], "trace", "span", ada["id"], label["id"], "a")
-    b = db.upsert_annotation(conn, project["id"], "trace", "span", grace["id"], label["id"], "b")
-    assert a["id"] != b["id"]
-
-def test_second_save_increments_revision_and_resets_writeback(conn):
-    project, label, reviewer = seeded_entities(conn)
-    first = db.upsert_annotation(conn, project["id"], "t", "s", reviewer["id"], label["id"], "one")
-    db.mark_writeback_written(conn, first["id"], first["revision"])
-    second = db.upsert_annotation(conn, project["id"], "t", "s", reviewer["id"], label["id"], "two")
-    assert second["revision"] == 2
-    assert second["writeback_status"] == "pending"
-
-def test_label_rename_preserves_id_and_annotations(conn):
-    project, label, reviewer = seeded_entities(conn)
-    db.upsert_annotation(conn, project["id"], "t", "s", reviewer["id"], label["id"], "ok")
-    labels = db.update_project(conn, project["id"], None, None, [db.LabelInput(label["id"], "Approved")])
-    assert labels[0]["id"] == label["id"]
-
-def test_combined_project_update_rolls_back_on_referenced_label_removal(conn):
-    project, label, reviewer = seeded_entities(conn)
-    db.upsert_annotation(conn, project["id"], "t", "s", reviewer["id"], label["id"], "ok")
-    with pytest.raises(db.ConflictError):
-        db.update_project(conn, project["id"], "changed", "changed_agent", [])
-    assert db.get_project(conn, project["id"])["criteria_text"] == ""
-
-def test_rejects_label_from_another_project(conn):
-    project, _, reviewer = seeded_entities(conn)
-    other_label = create_other_project_label(conn)
-    with pytest.raises(db.ValidationError):
-        db.upsert_annotation(conn, project["id"], "t", "s", reviewer["id"], other_label["id"], "bad")
-```
-
-Also test trimmed/non-empty/case-insensitively unique annotator names, profile rename, unused deletion, referenced-profile deletion conflict, idempotent seed, and stale revision status updates.
-
-- [ ] **Step 2: Run `uv run pytest apps/annotation-studio/tests/test_db.py -v` and confirm failure.**
-
-- [ ] **Step 3: Implement the spec schema plus these exact interfaces**
-
-Create frozen `LabelInput(id: int | None, name: str)`, plus `ValidationError` and
-`ConflictError`. Implement `init_db`, `seed_default_project`, `list_projects`, `get_project`,
-`get_label`, `list_labels`, `update_project`, `list_annotators`, `get_annotator`,
-`create_annotator`, `rename_annotator`, `delete_annotator`, `get_annotation`,
-`upsert_annotation`, `mark_writeback_written`, and `mark_writeback_failed` with the exact
-argument and return contracts stated in this task's Interfaces and exercised by Step 1's
-tests.
-
-`update_project` explicitly begins one transaction, validates stable IDs/names, applies every field, and rolls back on any exception. `upsert_annotation` validates annotator existence and label ownership, increments revision on conflict, and resets write-back fields. Status updates include both annotation ID and revision in their `WHERE` clause.
-
-- [ ] **Step 4: Run the database tests and confirm they pass.**
-- [ ] **Step 5: Commit with `git commit -m "annotation-studio: add transactional reviewer data model"`.**
-
----
-
-### Replacement Task 3: Parsing and stable Logfire pagination
-
-**Files:** Create `src/annotation_studio/logfire_client.py`, `tests/test_logfire_client.py`, and a trimmed real-span JSON fixture.
-
-**Interfaces:** Produces `Interaction`, `Cursor`, `encode_cursor`, `decode_cursor`, `validate_agent_name`, `parse_interaction`, and `fetch_project_interactions`.
-
-- [ ] **Step 1: Write failing tests for corrected first-new-user extraction, `final_result` preference, raw fallback, invalid agent names, cursor round-trip/validation, same-timestamp ordering, `limit + 1`, and no page-boundary duplication.**
-
-```python
-def test_cursor_round_trip():
-    value = Cursor("2026-08-28T00:00:00Z", "c7a2373c3fe61d3f")
-    assert decode_cursor(encode_cursor(value)) == value
-
-async def test_fetches_extra_row_and_orders_stably(monkeypatch):
-    fake = FakeQueryClient(three_rows())
-    monkeypatch.setattr(module, "AsyncLogfireQueryClient", lambda _: fake)
-    items, cursor = await fetch_project_interactions("read", "rx_assistant_agent", None, 2)
-    assert len(items) == 2 and cursor is not None
-    assert fake.limit == 3
-    assert "ORDER BY start_timestamp DESC, span_id DESC" in fake.sql
-```
-
-- [ ] **Step 2: Run the focused test and confirm failure.**
-
-- [ ] **Step 3: Implement types and query**
-
-```python
-@dataclass(frozen=True)
-class Cursor:
-    start_timestamp: str
-    span_id: str
-
-@dataclass
-class Interaction:
-    trace_id: str; span_id: str; start_timestamp: str
-    input_text: str; output_text: str
-    full_conversation: list[dict]; trace_url: str
-    raw_attributes: dict | None = None
-```
-
-Encode cursor JSON with URL-safe base64 and validate decoded types, ISO timestamp, and 16-hex span ID. Validate agent names. On later pages add this SQL predicate after safely formatting the validated values:
-
-```sql
-AND (start_timestamp < timestamp '{cursor_timestamp}'
- OR (start_timestamp = timestamp '{cursor_timestamp}' AND span_id < '{cursor_span_id}'))
-ORDER BY start_timestamp DESC, span_id DESC
-```
-
-Keep the 14-day bound, request `page_size + 1`, return only `page_size`, and return a cursor only if the extra row exists. Parsing follows the spec exactly.
-
-- [ ] **Step 4: Run `uv run pytest apps/annotation-studio/tests/test_logfire_client.py -v`.**
-- [ ] **Step 5: Commit with `git commit -m "annotation-studio: add parsing and keyset pagination"`.**
-
----
-
-### Replacement Task 4: Append-only Logfire writer
-
-**Files:** Create `src/annotation_studio/logfire_writer.py` and `tests/test_logfire_writer.py`.
-
-**Interfaces:** Produces `build_event_key(annotation) -> str` and `AnnotationWriter.write(annotation, annotator, label) -> None`; write raises `WritebackError` when the forced flush fails.
-
-- [ ] **Step 1: Write failing tests using a fake client**
-
-```python
-def test_uses_local_configuration(monkeypatch):
-    calls = []
-    monkeypatch.setattr(logfire, "configure", lambda **kw: calls.append(kw) or FakeLogfire())
-    AnnotationWriter("write")
-    assert calls == [{"local": True, "token": "write", "service_name": "annotation-studio-writeback"}]
-
-def test_attaches_parent_and_tags_reviewer(fake_logfire):
-    AnnotationWriter("write", client=fake_logfire).write(annotation(), annotator(), label())
-    assert fake_logfire.context["traceparent"] == "00-01a045b8d6d40acd6c98ee00f1a3fe93-c7a2373c3fe61d3f-01"
-    assert fake_logfire.events[0]["event_key"] == "annotation:11:revision:2"
-    assert "annotator-7" in fake_logfire.events[0]["_tags"]
-
-def test_false_flush_result_is_a_write_failure(fake_logfire):
-    fake_logfire.flush_result = False
-    with pytest.raises(WritebackError):
-        AnnotationWriter("write", client=fake_logfire).write(annotation(), annotator(), label())
-```
-
-Also assert all spec attributes and invalid trace/span rejection.
-
-- [ ] **Step 2: Run the test and confirm failure.**
-
-- [ ] **Step 3: Implement**
-
-```python
-class AnnotationWriter:
-    def __init__(self, write_token: str, client=None):
-        self.client = client or logfire.configure(local=True, token=write_token,
-                                                  service_name="annotation-studio-writeback")
-
-    def write(self, annotation: dict, annotator: dict, label: dict | None) -> None:
-        validate_trace_and_span(annotation["trace_id"], annotation["span_id"])
-        with logfire.attach_context({"traceparent":
-              f"00-{annotation['trace_id']}-{annotation['span_id']}-01"}):
-            self.client.info("annotation_studio.annotation",
-                _tags=["annotation-studio", "human-annotation", f"annotator-{annotator['id']}"],
-                event_key=f"annotation:{annotation['id']}:revision:{annotation['revision']}",
-                annotation_id=annotation["id"], annotation_revision=annotation["revision"],
-                annotator_id=annotator["id"], annotator_name=annotator["name"],
-                label_id=label["id"] if label else None, label_name=label["name"] if label else None,
-                description=annotation["description"], project_id=annotation["project_id"],
-                source_trace_id=annotation["trace_id"], source_span_id=annotation["span_id"])
-        if not self.client.force_flush(timeout_millis=3000):
-            raise WritebackError("Logfire exporter did not flush within 3000ms")
-```
-
-- [ ] **Step 4: Run writer tests.**
-- [ ] **Step 5: Commit with `git commit -m "annotation-studio: append annotation revisions to traces"`.**
-
----
-
-### Replacement Task 5: FastAPI APIs and write-back orchestration
-
-**Files:** Create `src/annotation_studio/main.py`, `src/annotation_studio/routes.py`, and `tests/test_routes.py`.
-
-**Interfaces:** Produces `create_annotation_studio_app(send_to_logfire=False, connection=None, writer=None)` and every API in the spec.
-
-- [ ] **Step 1: Write failing tests for project GET/atomic PUT, agent-name rejection, annotator CRUD/duplicate/referenced deletion, required/valid interaction `annotator_id`, reviewer-specific merges, label ownership, successful write-back, and failure-after-local-save.**
-
-```python
-def test_failed_writeback_keeps_saved_grade(client_with_failing_writer):
-    response = save_grade(client_with_failing_writer)
-    assert response.status_code == 200
-    assert response.json()["writeback_status"] == "failed"
-    assert response.json()["description"] == "Grounded"
-
-def test_other_reviewers_grade_is_not_merged(client, fake_fetch):
-    ada, grace = create_reviewers(client)
-    save_grade(client, ada["id"])
-    page = client.get(f"/api/projects/1/interactions?annotator_id={grace['id']}").json()
-    assert page["items"][0]["annotation"] is None
-```
-
-- [ ] **Step 2: Run route tests and confirm failure.**
-
-- [ ] **Step 3: Implement request models and routes**
-
-```python
-class LabelPayload(BaseModel): id: int | None = None; name: str
-class ProjectUpdateRequest(BaseModel):
-    criteria_text: str | None = None
-    top_level_agent_name: str | None = None
-    labels: list[LabelPayload] | None = None
-class AnnotatorRequest(BaseModel): name: str
-class AnnotationUpdateRequest(BaseModel):
-    annotator_id: int
-    label_id: int | None = None
-    description: str = ""
-```
-
-Map validation/conflict/missing resources to 400/409/404. Interaction listing requires a valid annotator, catches cursor `ValueError` as 400, calls the query wrapper, and merges `get_annotation(conn, project_id, interaction.trace_id, interaction.span_id, annotator_id)`.
-
-Annotation save performs the local upsert, loads reviewer/label, calls the writer, then marks the same revision written. On writer exception, mark it failed with `ExceptionClass: message` truncated to 500 characters and return 200 with the saved grade. Never include credentials in error text.
-
-`main.py` configures global app telemetry first, creates/seeds SQLite, constructs one local writer, registers routes, mounts `/assets`, and installs a final non-API SPA fallback. Dependency injection prevents writer construction in tests.
-
-- [ ] **Step 4: Run `uv run pytest apps/annotation-studio/tests/ -v`.**
-- [ ] **Step 5: Commit with `git commit -m "annotation-studio: add reviewer APIs and writeback"`.**
-
----
-
-### Replacement Task 6: React foundation and annotator page
-
-**Files:** Create `frontend/package.json`, TypeScript/Vite configs, `index.html`, `src/main.tsx`, `src/App.tsx`, `src/api.ts`, `src/types.ts`, `src/annotator.tsx`, `src/pages/Annotators.tsx`, `src/pages/ProjectList.tsx`, and `src/index.css`.
-
-**Interfaces:** Produces typed API calls and `AnnotatorProvider`/`useAnnotator`.
-
-- [ ] **Step 1: Configure React 18, Router 6, React Markdown 9, TypeScript 5.5, and Vite 5; use `tsc -b && vite build` and proxy `/api` to port 8000.**
-
-- [ ] **Step 2: Define types matching API fields, including stable `LabelInput`, annotator, annotation revision, and `"pending" | "written" | "failed"` status. Implement API functions for annotator CRUD, projects, reviewer-scoped interactions, and annotation upsert. Encode path/query components.**
-
-- [ ] **Step 3: Implement local selection context**
-
-```tsx
-const STORAGE_KEY = "annotation-studio.annotator-id";
-// Initialize from localStorage, fetch profiles, clear an ID absent from the fetched list,
-// and make setSelectedId update state and localStorage together.
-```
-
-The provider uses an effect to call `listAnnotators()`, a second effect to clear a selected ID absent from the returned list, and callbacks that update state and `localStorage` together. `/annotators` supports create, rename, select, and delete; show 409 errors beside the affected profile. The header shows the active name or “Choose annotator”.
-
-- [ ] **Step 4: Run `npm install && npm run build`; manually verify selection survives reload and clears after selected-profile deletion.**
-- [ ] **Step 5: Commit with `git commit -m "annotation-studio: add frontend annotator profiles"`.**
-
----
-
-### Replacement Task 7: Project and grading UI
-
-**Files:** Create `frontend/src/pages/ProjectDetail.tsx`, `components/ProjectEditor.tsx`, and `components/InteractionRow.tsx`; modify types and CSS.
-
-- [ ] **Step 1: Implement one atomic editor form. Label state is `{id?: number, name: string}[]`; rename preserves IDs, reorder moves objects, and additions omit IDs. Show 400/409 errors without replacing loaded state.**
-
-- [ ] **Step 2: Gate project detail on a selected annotator and reset/reload interactions when project or annotator changes**
-
-```tsx
-if (selectedId === null) return <Navigate to="/annotators" replace />;
-const page = await listInteractions(projectId, selectedId, cursor);
-setInteractions(old => cursor ? [...old, ...page.items] : page.items);
-```
-
-- [ ] **Step 3: Render markdown input/output, raw fallback, full tool transcript, trace link, label picker, description, badge, and save**
-
-```tsx
-const saved = await upsertAnnotation(projectId, interaction.trace_id, interaction.span_id, {
-  annotator_id: selectedId, label_id: labelId, description,
-});
-setAnnotation(saved);
-```
-
-For failed write-back show “Grade saved locally, but Logfire write-back failed: …” while retaining saved state. For success show a subtle “Written to Logfire”. Sync component state when the interaction/annotator prop changes.
-
-- [ ] **Step 4: Run `npm run build`; manually grade the same interaction differently as two reviewers, rename an in-use label, and verify a forced writer failure warning.**
-- [ ] **Step 5: Commit with `git commit -m "annotation-studio: add reviewer grading workflow"`.**
-
----
-
-### Replacement Task 8: Docker and final verification
-
-**Files:** Create `apps/annotation-studio/Dockerfile`; modify `docker-compose.yml` and `.gitignore`.
-
-- [ ] **Step 1: Add a Node 20 frontend-build stage and Python 3.11 runtime stage. Copy `frontend/dist` to `src/annotation_studio/static/dist`, run `uv sync --frozen --package annotation-studio`, and serve Uvicorn on port 8000.**
-
-- [ ] **Step 2: Add `annotation-studio` Compose service on `8003:8000`, profiles `annotation-studio`/`all`, app `.env`, and named volume `annotation_studio_data:/app/apps/annotation-studio/data`. Ignore data, node_modules, and built dist.**
-
-- [ ] **Step 3: Verify**
-
-```bash
-uv sync --all-packages
-uv run pytest apps/annotation-studio/tests/ -v
-cd apps/annotation-studio/frontend && npm run build
-cd /Users/duncanmckinnon/Documents/code/pydantic-demos
-docker compose --profile annotation-studio config
-docker compose --profile annotation-studio build annotation-studio
-```
-
-- [ ] **Step 4: With real gitignored tokens, save revision 1 and edit to revision 2. Verify two `annotation_studio.annotation` children under the source agent span, stable event keys, reviewer tags, written SQLite statuses, and independent grades after switching reviewer.**
-
-- [ ] **Step 5: Commit with `git commit -m "annotation-studio: add container integration"`.**
-
----
-
-
-## Revision Coverage Map
-
-- Replacement Task 1 supersedes original Task 1.
-- Replacement Task 2 supersedes original Task 2.
-- Replacement Task 3 supersedes original Tasks 3–4 and retains their real-span fixtures,
-  raw fallback, trace-link construction, and query fakes.
-- Replacement Task 4 is new: the separately configured append-only Logfire writer.
-- Replacement Task 5 supersedes original Tasks 5–6 and retains the SPA static mount.
-- Replacement Tasks 6–7 supersede original Tasks 7–11 while retaining Vite configuration,
-  markdown/transcript rendering, styling, and explicit-save behavior.
-- Replacement Task 8 supersedes original Task 12 and retains its multi-stage Docker pattern.
+**Spec coverage:** every section of `docs/superpowers/specs/2026-08-28-annotation-studio-design.md`
+maps onto a task above — read access + keyset pagination (Task 3), the exact schema incl.
+`annotators`/`revision`/`writeback_*`/`written_at` (Task 2), write-back mechanics incl. the
+verified propagator fix (Task 4), the full API surface incl. annotator CRUD and
+`annotator_id`-scoped interactions (Task 5), the frontend incl. annotator gating and write-back
+status display (Tasks 6–7), and Docker/Compose (Task 8). No write-back onto a still-completed
+span's own attributes, no Logfire annotation-queue integration, and no auth appear anywhere —
+consistent with Out of Scope.
+
+**Placeholder scan:** no TBD/TODO markers; every step has runnable code or an exact shell
+command; no "see original Task N" or "similar to" references — this document is now the only
+copy of this plan.
+
+**Type consistency:** `db.py`'s `LabelInput`/`Cursor`/`Interaction` fields match
+`routes.py`'s Pydantic models and `asdict()` usage, which match `types.ts`'s TypeScript
+interfaces and `api.ts`'s payload shapes, which match every component's props and `onSave`
+calls, checked end-to-end from Task 2 through Task 7.
