@@ -601,8 +601,10 @@ CREATE TABLE IF NOT EXISTS annotations (
 """
 
 
-class ValidationError(Exception):
-    """A caller-supplied value is invalid — maps to HTTP 400 in routes.py."""
+class ValidationError(ValueError):
+    """A caller-supplied value is invalid — maps to HTTP 400 in routes.py. Subclasses
+    ValueError (not bare Exception) so it satisfies `pytest.raises(ValueError)` wherever a
+    caller only cares that validation failed, not which module's validator caught it."""
 
 
 class ConflictError(Exception):
@@ -691,7 +693,14 @@ def update_project(
     single "Save" button is all-or-nothing."""
     try:
         if top_level_agent_name is not None:
-            validate_agent_name(top_level_agent_name)
+            try:
+                validate_agent_name(top_level_agent_name)
+            except ValueError as exc:
+                # validate_agent_name (logfire_client, Task 3) raises plain ValueError, not
+                # this module's ValidationError — translate so routes.py's single
+                # `except db.ValidationError` (Task 5) maps every validation failure here to
+                # HTTP 400, not just the ones raised directly by this function.
+                raise ValidationError(str(exc)) from exc
             conn.execute(
                 "UPDATE projects SET top_level_agent_name = ?, updated_at = ? WHERE id = ?",
                 (top_level_agent_name, _now(), project_id),
@@ -1991,10 +2000,19 @@ def register_routes(
             raise HTTPException(status_code=409, detail=str(exc))
 
     @router.get("/projects/{project_id}/interactions")
-    async def list_interactions(project_id: int, annotator_id: int, cursor: str | None = None) -> dict:
+    async def list_interactions(
+        project_id: int, annotator_id: int | None = None, cursor: str | None = None
+    ) -> dict:
+        # annotator_id is optional at the FastAPI level (not `annotator_id: int` with no
+        # default) so a missing value reaches this explicit check and returns HTTP 400 with
+        # the same {"detail": ...} error shape every other validation failure in this API
+        # uses — a required-but-typed query param would instead fail FastAPI's own request
+        # validation with a 422 and a different error body.
         project = db.get_project(conn, project_id)
         if project is None:
             raise HTTPException(status_code=404, detail="project_not_found")
+        if annotator_id is None:
+            raise HTTPException(status_code=400, detail="annotator_id is required")
         if db.get_annotator(conn, annotator_id) is None:
             raise HTTPException(status_code=400, detail="unknown_annotator_id")
 
