@@ -670,7 +670,7 @@ label {
 
 .project-detail-layout {
   display: grid;
-  grid-template-columns: 1fr 420px;
+  grid-template-columns: 1fr 560px;
   gap: 2.5rem;
   align-items: start;
 }
@@ -689,7 +689,7 @@ label {
   overflow-y: auto;
 }
 
-@media (max-width: 980px) {
+@media (max-width: 1180px) {
   .project-detail-layout {
     grid-template-columns: 1fr;
   }
