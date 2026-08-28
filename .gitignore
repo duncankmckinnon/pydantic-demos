@@ -219,3 +219,9 @@ __marimo__/
 
 # Superpowers subagent-driven-development scratch workspaces
 .superpowers/
+
+# Node (annotation-studio frontend)
+node_modules/
+
+# annotation-studio local SQLite data
+apps/annotation-studio/data/
