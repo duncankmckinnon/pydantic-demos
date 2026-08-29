@@ -216,3 +216,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Superpowers subagent-driven-development scratch workspaces
+.superpowers/
+
+# Node (annotation-studio frontend)
+node_modules/
+apps/annotation-studio/frontend/vite.config.js
+apps/annotation-studio/frontend/vite.config.d.ts
+apps/annotation-studio/frontend/*.tsbuildinfo
+
+# annotation-studio local SQLite data
+apps/annotation-studio/data/
