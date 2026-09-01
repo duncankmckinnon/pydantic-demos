@@ -998,6 +998,20 @@ label {
   border-color: var(--color-accent-strong);
 }
 
+.label-chip-list-readonly {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.chip-readonly {
+  cursor: default;
+}
+
+.chip-readonly:hover {
+  border-color: var(--color-border-strong);
+}
+
 .chip-selected {
   background: linear-gradient(135deg, var(--pd-lithium) 0%, var(--pd-lithium-700) 100%);
   border-color: transparent;

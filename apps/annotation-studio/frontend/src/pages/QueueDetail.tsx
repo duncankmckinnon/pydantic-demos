@@ -149,7 +149,6 @@ export function QueueDetail() {
         <div className="page-heading page-heading-row">
           <div>
             <h1>{queue.name}</h1>
-            {queue.criteria_text && <p className="queue-criteria">{queue.criteria_text}</p>}
           </div>
           <div className="queue-detail-actions">
             <Link className="btn btn-secondary" to={`/queues/${queue.id}/edit`}>
@@ -206,22 +205,53 @@ export function QueueDetail() {
           </section>
         )}
 
-        <div className="interaction-list">
-          {items.map((item) => (
-            <QueueItemRow
-              key={`${item.trace_id}:${item.span_id}`}
-              queueId={queue.id}
-              annotatorId={selectedId}
-              item={item}
-              labels={queue.labels}
-            />
-          ))}
+        <div className="project-detail-layout">
+          <div className="project-detail-main">
+            <h2 className="interactions-heading">Items</h2>
+            <div className="interaction-list">
+              {items.map((item) => (
+                <QueueItemRow
+                  key={`${item.trace_id}:${item.span_id}`}
+                  queueId={queue.id}
+                  annotatorId={selectedId}
+                  item={item}
+                  labels={queue.labels}
+                />
+              ))}
+            </div>
+            {nextCursor && (
+              <button className="btn btn-secondary load-more-btn" onClick={() => loadItems(nextCursor)} disabled={loading}>
+                {loading ? "Loading…" : "Load more"}
+              </button>
+            )}
+          </div>
+
+          <aside className="project-detail-sidebar">
+            <section className="card project-editor">
+              <div className="card-header">
+                <h2>Grading criteria</h2>
+              </div>
+              <div className="field">
+                <p className="queue-criteria">{queue.criteria_text || "No criteria set for this queue."}</p>
+              </div>
+              <div className="field">
+                <label>Labels</label>
+                <div className="label-chip-list-readonly">
+                  {queue.labels.map((label) => (
+                    <span key={label.id} className="chip chip-readonly">
+                      {label.name}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <div className="card-footer">
+                <Link className="btn-link" to={`/queues/${queue.id}/edit`}>
+                  Edit criteria &amp; labels →
+                </Link>
+              </div>
+            </section>
+          </aside>
         </div>
-        {nextCursor && (
-          <button className="btn btn-secondary load-more-btn" onClick={() => loadItems(nextCursor)} disabled={loading}>
-            {loading ? "Loading…" : "Load more"}
-          </button>
-        )}
       </main>
     </div>
   );
