@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -32,7 +33,7 @@ def test_parse_interaction_extracts_input_and_output_for_new_turn() -> None:
     # scrubbed values are rendered as-is, no special handling.
     assert interaction.output_text == "[Scrubbed due to 'auth']"
     assert len(interaction.full_conversation) == 6
-    assert interaction.raw_attributes is None
+    assert interaction.raw_row is None
 
 
 def test_parse_interaction_prefers_final_result_over_assistant_text() -> None:
@@ -44,7 +45,7 @@ def test_parse_interaction_prefers_final_result_over_assistant_text() -> None:
     assert interaction.output_text.startswith("No — ibuprofen")
 
 
-def test_parse_interaction_falls_back_to_raw_attributes_when_messages_missing() -> None:
+def test_parse_interaction_falls_back_to_raw_row_when_messages_missing() -> None:
     row = _load("malformed_attributes.json")
 
     interaction = parse_interaction(row, trace_url="https://example.test")
@@ -52,7 +53,10 @@ def test_parse_interaction_falls_back_to_raw_attributes_when_messages_missing() 
     assert interaction.input_text == ""
     assert interaction.output_text == ""
     assert interaction.full_conversation == []
-    assert interaction.raw_attributes == {"some_other_field": "value"}
+    assert interaction.raw_row == {
+        "duration": 0.5,
+        "attributes": {"some_other_field": "value"},
+    }
 
 
 def test_validate_agent_name_accepts_valid_names() -> None:
@@ -190,3 +194,150 @@ async def test_fetch_project_interactions_rejects_invalid_agent_name() -> None:
         await logfire_client.fetch_project_interactions(
             "test-token", "not valid; DROP TABLE records", cursor=None, limit=20
         )
+
+
+def test_validate_query_accepts_a_valid_select() -> None:
+    query = "SELECT trace_id, span_id, start_timestamp FROM records WHERE span_name = 'x'"
+    assert logfire_client.validate_query(query) == query
+
+
+def test_validate_query_strips_single_trailing_semicolon() -> None:
+    assert logfire_client.validate_query("SELECT 1;") == "SELECT 1"
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "",
+        "   ",
+        "UPDATE records SET x = 1",
+        "SELECT 1; DROP TABLE records",
+        "SELECT 1 -- comment; SELECT 2",
+        "DELETE FROM records",
+        "x" * 5001,
+    ],
+)
+def test_validate_query_rejects_unsafe_or_invalid_queries(query: str) -> None:
+    with pytest.raises(ValueError):
+        logfire_client.validate_query(query)
+
+
+def test_sample_included_is_deterministic_for_the_same_item() -> None:
+    results = {
+        logfire_client.sample_included(1, "trace-1", "span-1", 50) for _ in range(20)
+    }
+    assert len(results) == 1
+
+
+def test_sample_included_100_percent_always_included() -> None:
+    for i in range(50):
+        assert logfire_client.sample_included(1, f"trace-{i}", "span-1", 100) is True
+
+
+def test_sample_included_roughly_matches_percentage_across_many_items() -> None:
+    included = sum(
+        logfire_client.sample_included(1, f"trace-{i}", "span-1", 30) for i in range(2000)
+    )
+    assert 500 < included < 900
+
+
+class FakeErroringQueryClient(FakeQueryClient):
+    async def query_json_rows(self, sql, min_timestamp=None, limit=None, **kwargs):
+        raise RuntimeError("simulated Logfire query error")
+
+
+async def test_validate_query_columns_passes_for_a_row_with_required_columns(monkeypatch) -> None:
+    fake_client = FakeQueryClient([_row("trace-1", "2026-08-28T00:00:00Z")])
+    monkeypatch.setattr(logfire_client, "AsyncLogfireQueryClient", lambda read_token: fake_client)
+
+    await logfire_client.validate_query_columns("test-token", "SELECT * FROM records")
+
+    assert "LIMIT 1" in fake_client.queries[0]["sql"]
+
+
+async def test_validate_query_columns_raises_when_required_column_missing(monkeypatch) -> None:
+    fake_client = FakeQueryClient([{"trace_id": "t1", "span_id": "s1"}])
+    monkeypatch.setattr(logfire_client, "AsyncLogfireQueryClient", lambda read_token: fake_client)
+
+    with pytest.raises(ValueError, match="start_timestamp"):
+        await logfire_client.validate_query_columns("test-token", "SELECT trace_id, span_id FROM records")
+
+
+async def test_validate_query_columns_passes_when_query_currently_matches_nothing(monkeypatch) -> None:
+    fake_client = FakeQueryClient([])
+    monkeypatch.setattr(logfire_client, "AsyncLogfireQueryClient", lambda read_token: fake_client)
+
+    await logfire_client.validate_query_columns("test-token", "SELECT * FROM records WHERE 1=0")
+
+
+async def test_validate_query_columns_wraps_logfire_errors(monkeypatch) -> None:
+    fake_client = FakeErroringQueryClient([])
+    monkeypatch.setattr(logfire_client, "AsyncLogfireQueryClient", lambda read_token: fake_client)
+
+    with pytest.raises(ValueError, match="simulated Logfire query error"):
+        await logfire_client.validate_query_columns("test-token", "SELECT * FROM nonsense")
+
+
+async def test_fetch_queue_matches_returns_rows_with_required_columns(monkeypatch) -> None:
+    fake_client = FakeQueryClient([_row("trace-1", "2026-08-28T00:00:00Z")])
+    monkeypatch.setattr(logfire_client, "AsyncLogfireQueryClient", lambda read_token: fake_client)
+    window_start = datetime(2026, 8, 27, tzinfo=timezone.utc)
+    window_end = datetime(2026, 8, 28, tzinfo=timezone.utc)
+
+    rows = await logfire_client.fetch_queue_matches(
+        "test-token", "SELECT * FROM records", window_start, window_end, limit=100
+    )
+
+    assert len(rows) == 1
+    assert fake_client.queries[0]["min_timestamp"] == window_start
+
+
+async def test_fetch_queue_matches_skips_rows_missing_required_columns(monkeypatch) -> None:
+    fake_client = FakeQueryClient([{"trace_id": "t1"}])
+    monkeypatch.setattr(logfire_client, "AsyncLogfireQueryClient", lambda read_token: fake_client)
+
+    rows = await logfire_client.fetch_queue_matches(
+        "test-token", "SELECT * FROM records", datetime.now(timezone.utc), datetime.now(timezone.utc), limit=100
+    )
+
+    assert rows == []
+
+
+async def test_fetch_queue_item_content_keys_by_trace_and_span(monkeypatch) -> None:
+    trace_id = "01a045b8d6d40acd6c98ee00f1a3fe93"
+    fake_client = FakeQueryClient([_row(trace_id, "2026-08-28T00:00:00Z", span_id="c7a2373c3fe61d3f")])
+    monkeypatch.setattr(logfire_client, "AsyncLogfireQueryClient", lambda read_token: fake_client)
+
+    content = await logfire_client.fetch_queue_item_content(
+        "test-token", [(trace_id, "c7a2373c3fe61d3f")]
+    )
+
+    assert (trace_id, "c7a2373c3fe61d3f") in content
+    assert content[(trace_id, "c7a2373c3fe61d3f")].input_text == "hi"
+
+
+async def test_fetch_queue_item_content_omits_pairs_not_returned(monkeypatch) -> None:
+    trace_id = "01a045b8d6d40acd6c98ee00f1a3fe93"
+    fake_client = FakeQueryClient([])
+    monkeypatch.setattr(logfire_client, "AsyncLogfireQueryClient", lambda read_token: fake_client)
+
+    content = await logfire_client.fetch_queue_item_content("test-token", [(trace_id, "c7a2373c3fe61d3f")])
+
+    assert content == {}
+
+
+async def test_fetch_queue_item_content_returns_empty_dict_for_no_items() -> None:
+    assert await logfire_client.fetch_queue_item_content("test-token", []) == {}
+
+
+async def test_fetch_queue_item_content_rejects_malformed_ids() -> None:
+    with pytest.raises(ValueError):
+        await logfire_client.fetch_queue_item_content("test-token", [("not-hex", "c7a2373c3fe61d3f")])
+
+
+def test_build_explore_link_includes_project_path_and_query() -> None:
+    url = logfire_client.build_explore_link(
+        "https://logfire-us.pydantic.dev", "duncan", "rx-assistant-demo", "SELECT 1"
+    )
+    assert url.startswith("https://logfire-us.pydantic.dev/duncan/rx-assistant-demo/explore?q=")
+    assert "SELECT" in url
