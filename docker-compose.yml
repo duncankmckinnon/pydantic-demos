@@ -63,6 +63,13 @@ services:
     profiles: ["rx-assistant", "all"]
 
   annotation-studio:
+    # TEMPORARY (annotation-studio-queues branch): container_name, volume, and host port are
+    # all overridden below so this branch's build never collides with or overwrites main's
+    # running annotation-studio container/data — this branch is a breaking SQLite schema
+    # change, so sharing main's `annotation_studio_data` volume would corrupt it. Revert this
+    # block to main's version (container_name removed, `annotation_studio_data` volume,
+    # "8003:8000" port) as part of merging this branch back.
+    container_name: annotation-studio-queues-tmp
     build:
       context: .
       dockerfile: apps/annotation-studio/Dockerfile
@@ -70,11 +77,12 @@ services:
     environment:
       ANNOTATION_STUDIO_DATABASE_PATH: /app/apps/annotation-studio/data/annotation_studio.sqlite3
     volumes:
-      - annotation_studio_data:/app/apps/annotation-studio/data
+      - annotation_studio_queues_tmp_data:/app/apps/annotation-studio/data
     ports:
-      - "8003:8000"
+      - "8013:8000"
     profiles: ["annotation-studio", "all"]
 
 volumes:
   rx_assistant_db_data:
+  annotation_studio_queues_tmp_data:
   annotation_studio_data:
