@@ -1,3 +1,8 @@
+# Every *_PORT variable below is a host port mapping, resolved by `docker compose` itself
+# before a container starts — that means it reads from this repo root's own .env (see
+# .env.example here), NOT from the app's apps/<name>/.env, since an env_file only reaches a
+# container's runtime environment and can't affect a host port mapping decided before the
+# container exists. Each container's own internal port is fixed regardless.
 services:
   chat:
     build:
@@ -5,7 +10,7 @@ services:
       dockerfile: apps/chat/Dockerfile
     env_file: apps/chat/.env
     ports:
-      - "8001:8000"
+      - "${CHAT_PORT:-8001}:8000"
     profiles: ["chat", "all"]
 
   otel-collector-chat:
@@ -28,7 +33,7 @@ services:
       - rx_assistant_db_data:/var/lib/postgresql/data
       - ./apps/rx-assistant/db-init:/docker-entrypoint-initdb.d:ro
     ports:
-      - "5433:5432"
+      - "${RX_ASSISTANT_DB_PORT:-5433}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U rx_assistant"]
       interval: 5s
@@ -49,7 +54,7 @@ services:
       rx-assistant-db:
         condition: service_healthy
     ports:
-      - "8002:8000"
+      - "${RX_ASSISTANT_PORT:-8002}:8000"
     profiles: ["rx-assistant", "all"]
 
   rx-assistant-otel-collector:
@@ -72,11 +77,6 @@ services:
     volumes:
       - annotation_studio_data:/app/apps/annotation-studio/data
     ports:
-      # Host port, resolved by `docker compose` itself before the container starts — this
-      # substitution reads from the repo root's own .env (see root .env.example), NOT
-      # apps/annotation-studio/.env above, since that env_file only reaches the container's
-      # runtime environment and can't affect a host port mapping decided before the container
-      # exists. The container's internal port is fixed at 8000 either way.
       - "${ANNOTATION_STUDIO_PORT:-8003}:8000"
     profiles: ["annotation-studio", "all"]
 

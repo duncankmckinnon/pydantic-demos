@@ -9,7 +9,10 @@ and Logfire. See [AGENTS.md](AGENTS.md) for the repo structure and how to add a 
   factory, eval-judge template) used by every demo.
 - `apps/<name>/` — one demo application per folder, each with its own `.env` and Dockerfile.
 - `docker-compose.yml` — runs demos standalone (`docker compose --profile <name> up`) or
-  together (`--profile all`).
+  together (`--profile all`). Each service's host port has a default and is overridable via
+  `CHAT_PORT`, `RX_ASSISTANT_PORT`, `RX_ASSISTANT_DB_PORT`, or `ANNOTATION_STUDIO_PORT` in a
+  `.env` at the repo root (copy `.env.example` there) — separate from each app's own
+  `apps/<name>/.env`, since a host port mapping is resolved before a container starts.
 
 ## Quick start (chat demo)
 
