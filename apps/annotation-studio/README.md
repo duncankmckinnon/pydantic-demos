@@ -41,7 +41,17 @@ there's no separate host/`uvicorn --reload` workflow for this demo. From the rep
 docker compose --profile annotation-studio up --build -d
 ```
 
-Open http://localhost:8003.
+Open http://localhost:8003. To use a different host port, set `ANNOTATION_STUDIO_PORT` — copy
+the repo root's `.env.example` to `.env` there (not this app's own `.env`) and set it, or
+export it before running compose:
+
+```bash
+ANNOTATION_STUDIO_PORT=8073 docker compose --profile annotation-studio up --build -d
+```
+
+This is a Docker Compose host-port mapping, resolved before the container starts, which is
+why it lives in the repo root's `.env` rather than this app's own — see the comment in
+`docker-compose.yml` if you're curious why the two `.env` files are split this way.
 
 ## Set up your first annotation queue
 

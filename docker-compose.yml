@@ -72,7 +72,12 @@ services:
     volumes:
       - annotation_studio_data:/app/apps/annotation-studio/data
     ports:
-      - "8003:8000"
+      # Host port, resolved by `docker compose` itself before the container starts — this
+      # substitution reads from the repo root's own .env (see root .env.example), NOT
+      # apps/annotation-studio/.env above, since that env_file only reaches the container's
+      # runtime environment and can't affect a host port mapping decided before the container
+      # exists. The container's internal port is fixed at 8000 either way.
+      - "${ANNOTATION_STUDIO_PORT:-8003}:8000"
     profiles: ["annotation-studio", "all"]
 
 volumes:
