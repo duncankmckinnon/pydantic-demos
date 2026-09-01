@@ -10,6 +10,7 @@ os.environ["LOGFIRE_TOKEN"] = "test-token"
 os.environ["LOGFIRE_SEND_TO_LOGFIRE"] = "false"
 os.environ["RX_ASSISTANT_LOGFIRE_READ_TOKEN"] = "test-read-token"
 os.environ["RX_ASSISTANT_LOGFIRE_WRITE_TOKEN"] = "test-write-token"
+os.environ["RX_ASSISTANT_LOGFIRE_DATASETS_TOKEN"] = "test-datasets-token"
 os.environ["ANNOTATION_STUDIO_DATABASE_PATH"] = _db_path
 
 import logfire  # noqa: E402

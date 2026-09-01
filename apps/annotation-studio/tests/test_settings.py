@@ -7,15 +7,20 @@ from annotation_studio.settings import AppSettings, SourceSettings
 def test_source_settings_reads_separate_tokens(monkeypatch) -> None:
     monkeypatch.setenv("RX_ASSISTANT_LOGFIRE_READ_TOKEN", "pylf_read_test")
     monkeypatch.setenv("RX_ASSISTANT_LOGFIRE_WRITE_TOKEN", "pylf_write_test")
+    monkeypatch.setenv("RX_ASSISTANT_LOGFIRE_DATASETS_TOKEN", "pylf_datasets_test")
 
     settings = SourceSettings()
 
     assert settings.read_token == "pylf_read_test"
     assert settings.write_token == "pylf_write_test"
+    assert settings.datasets_token == "pylf_datasets_test"
     assert settings.top_level_agent_name == "rx_assistant_agent"
 
 
-@pytest.mark.parametrize("missing_var", ["RX_ASSISTANT_LOGFIRE_READ_TOKEN", "RX_ASSISTANT_LOGFIRE_WRITE_TOKEN"])
+@pytest.mark.parametrize(
+    "missing_var",
+    ["RX_ASSISTANT_LOGFIRE_READ_TOKEN", "RX_ASSISTANT_LOGFIRE_WRITE_TOKEN", "RX_ASSISTANT_LOGFIRE_DATASETS_TOKEN"],
+)
 def test_source_settings_requires_both_tokens(monkeypatch, missing_var: str) -> None:
     monkeypatch.setenv("RX_ASSISTANT_LOGFIRE_READ_TOKEN", "read")
     monkeypatch.setenv("RX_ASSISTANT_LOGFIRE_WRITE_TOKEN", "write")

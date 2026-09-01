@@ -9,6 +9,7 @@ class SourceSettings(BaseSettings):
 
     read_token: str = Field(validation_alias="RX_ASSISTANT_LOGFIRE_READ_TOKEN")
     write_token: str = Field(validation_alias="RX_ASSISTANT_LOGFIRE_WRITE_TOKEN")
+    datasets_token: str = Field(validation_alias="RX_ASSISTANT_LOGFIRE_DATASETS_TOKEN")
     top_level_agent_name: str = Field(default="rx_assistant_agent")
 
 

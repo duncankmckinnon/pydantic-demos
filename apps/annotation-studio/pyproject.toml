@@ -5,6 +5,7 @@ requires-python = ">=3.11"
 dependencies = [
     "demo-core",
     "logfire",
+    "pydantic-evals",
     "fastapi",
     "uvicorn[standard]",
     "python-dotenv",
