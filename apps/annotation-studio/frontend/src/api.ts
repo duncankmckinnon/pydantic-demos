@@ -1,4 +1,13 @@
-import type { Annotation, Annotator, InteractionsPage, Project, ProjectSummary } from "./types";
+import type {
+  Annotation,
+  Annotator,
+  DatasetResult,
+  Project,
+  ProjectSummary,
+  Queue,
+  QueueItemsPage,
+  QueueSummary,
+} from "./types";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -21,15 +30,8 @@ export function getProject(projectId: number): Promise<Project> {
   return request<Project>(`/api/projects/${projectId}`);
 }
 
-export function updateProject(
-  projectId: number,
-  payload: {
-    criteria_text?: string;
-    top_level_agent_name?: string;
-    labels?: { id: number | null; name: string }[];
-  },
-): Promise<Project> {
-  return request<Project>(`/api/projects/${projectId}`, { method: "PUT", body: JSON.stringify(payload) });
+export function updateProject(projectId: number, name: string): Promise<Project> {
+  return request<Project>(`/api/projects/${projectId}`, { method: "PUT", body: JSON.stringify({ name }) });
 }
 
 export function listAnnotators(): Promise<Annotator[]> {
@@ -48,24 +50,72 @@ export function deleteAnnotator(id: number): Promise<void> {
   return request<void>(`/api/annotators/${id}`, { method: "DELETE" });
 }
 
-export function listInteractions(
-  projectId: number,
-  annotatorId: number,
-  cursor: string | null,
-): Promise<InteractionsPage> {
-  const params = new URLSearchParams({ annotator_id: String(annotatorId) });
-  if (cursor) params.set("cursor", cursor);
-  return request<InteractionsPage>(`/api/projects/${projectId}/interactions?${params.toString()}`);
+export interface QueueDraft {
+  name: string;
+  query: string;
+  criteria_text: string;
+  sampling_percentage: number;
+  labels: { id: number | null; name: string }[];
+  annotator_ids: number[];
 }
 
-export function upsertAnnotation(
-  projectId: number,
+export function listQueues(projectId: number, annotatorId: number | null): Promise<QueueSummary[]> {
+  const params = new URLSearchParams();
+  if (annotatorId !== null) params.set("annotator_id", String(annotatorId));
+  const qs = params.toString();
+  return request<QueueSummary[]>(`/api/projects/${projectId}/queues${qs ? `?${qs}` : ""}`);
+}
+
+export function createQueue(projectId: number, draft: QueueDraft): Promise<Queue> {
+  return request<Queue>(`/api/projects/${projectId}/queues`, { method: "POST", body: JSON.stringify(draft) });
+}
+
+export function getQueue(queueId: number, annotatorId: number | null): Promise<Queue> {
+  const params = new URLSearchParams();
+  if (annotatorId !== null) params.set("annotator_id", String(annotatorId));
+  const qs = params.toString();
+  return request<Queue>(`/api/queues/${queueId}${qs ? `?${qs}` : ""}`);
+}
+
+export function updateQueue(queueId: number, draft: Partial<QueueDraft>): Promise<Queue> {
+  return request<Queue>(`/api/queues/${queueId}`, { method: "PUT", body: JSON.stringify(draft) });
+}
+
+export function deleteQueue(queueId: number): Promise<void> {
+  return request<void>(`/api/queues/${queueId}`, { method: "DELETE" });
+}
+
+export function refreshQueue(
+  queueId: number,
+  annotatorId: number | null,
+): Promise<{ new_item_count: number; total_item_count: number }> {
+  const params = new URLSearchParams();
+  if (annotatorId !== null) params.set("annotator_id", String(annotatorId));
+  const qs = params.toString();
+  return request(`/api/queues/${queueId}/refresh${qs ? `?${qs}` : ""}`, { method: "POST" });
+}
+
+export function listQueueItems(queueId: number, annotatorId: number, cursor: string | null): Promise<QueueItemsPage> {
+  const params = new URLSearchParams({ annotator_id: String(annotatorId) });
+  if (cursor) params.set("cursor", cursor);
+  return request<QueueItemsPage>(`/api/queues/${queueId}/items?${params.toString()}`);
+}
+
+export function upsertQueueAnnotation(
+  queueId: number,
   traceId: string,
   spanId: string,
   payload: { annotator_id: number; label_id: number | null; description: string },
 ): Promise<Annotation> {
-  return request<Annotation>(`/api/projects/${projectId}/annotations/${traceId}/${spanId}`, {
+  return request<Annotation>(`/api/queues/${queueId}/annotations/${traceId}/${spanId}`, {
     method: "PUT",
     body: JSON.stringify(payload),
+  });
+}
+
+export function createDataset(queueId: number, name: string, labelId: number | null): Promise<DatasetResult> {
+  return request<DatasetResult>(`/api/queues/${queueId}/datasets`, {
+    method: "POST",
+    body: JSON.stringify({ name, label_id: labelId }),
   });
 }
