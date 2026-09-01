@@ -3,8 +3,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from annotation_studio.logfire_client import validate_agent_name
-
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS projects (
     id INTEGER PRIMARY KEY,
@@ -115,13 +113,13 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
     return dict(row)
 
 
-def seed_default_project(conn: sqlite3.Connection) -> None:
+def seed_default_project(conn: sqlite3.Connection, name: str) -> None:
     if conn.execute("SELECT id FROM projects LIMIT 1").fetchone() is not None:
         return
     now = _now()
     conn.execute(
         "INSERT INTO projects (name, created_at, updated_at) VALUES (?, ?, ?)",
-        ("rx-assistant", now, now),
+        (name, now, now),
     )
     conn.commit()
 
@@ -322,25 +320,6 @@ def delete_queue(conn: sqlite3.Connection, queue_id: int) -> None:
     conn.execute("DELETE FROM labels WHERE queue_id = ?", (queue_id,))
     conn.execute("DELETE FROM queues WHERE id = ?", (queue_id,))
     conn.commit()
-
-
-def seed_default_queue(conn: sqlite3.Connection, project_id: int, top_level_agent_name: str) -> None:
-    if conn.execute("SELECT id FROM queues WHERE project_id = ? LIMIT 1", (project_id,)).fetchone() is not None:
-        return
-    validate_agent_name(top_level_agent_name)
-    query = (
-        "SELECT trace_id, span_id, start_timestamp, duration, attributes FROM records "
-        f"WHERE span_name = 'invoke_agent {top_level_agent_name}' ORDER BY start_timestamp DESC"
-    )
-    create_queue(
-        conn, project_id,
-        name="All rx_assistant interactions",
-        query=query,
-        criteria_text="",
-        sampling_percentage=100,
-        labels=[LabelInput(None, "Pass"), LabelInput(None, "Neutral"), LabelInput(None, "Fail")],
-        annotator_ids=[],
-    )
 
 
 def list_labels(conn: sqlite3.Connection, queue_id: int) -> list[dict]:

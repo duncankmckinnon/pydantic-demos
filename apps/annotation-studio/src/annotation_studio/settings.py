@@ -3,14 +3,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class SourceSettings(BaseSettings):
-    """Read spans and append annotation events in rx-assistant's Logfire project."""
+    """Read spans and append annotation events in the configured Logfire project."""
 
     model_config = SettingsConfigDict(extra="ignore", populate_by_name=True)
 
-    read_token: str = Field(validation_alias="RX_ASSISTANT_LOGFIRE_READ_TOKEN")
-    write_token: str = Field(validation_alias="RX_ASSISTANT_LOGFIRE_WRITE_TOKEN")
-    datasets_token: str = Field(validation_alias="RX_ASSISTANT_LOGFIRE_DATASETS_TOKEN")
-    top_level_agent_name: str = Field(default="rx_assistant_agent")
+    read_token: str = Field(validation_alias="LOGFIRE_READ_TOKEN")
+    write_token: str = Field(validation_alias="LOGFIRE_WRITE_TOKEN")
+    datasets_token: str = Field(validation_alias="LOGFIRE_DATASETS_TOKEN")
 
 
 class AppSettings(BaseSettings):

@@ -14,7 +14,7 @@ def _fresh_conn() -> sqlite3.Connection:
 
 
 def _seeded_project(conn: sqlite3.Connection) -> dict:
-    db.seed_default_project(conn)
+    db.seed_default_project(conn, "Test Project")
     return db.list_projects(conn)[0]
 
 
@@ -37,16 +37,18 @@ def test_seed_default_project_creates_project() -> None:
 
     project = _seeded_project(conn)
 
-    assert project["name"] == "rx-assistant"
+    assert project["name"] == "Test Project"
 
 
 def test_seed_default_project_is_idempotent() -> None:
     conn = _fresh_conn()
-    db.seed_default_project(conn)
+    db.seed_default_project(conn, "Test Project")
 
-    db.seed_default_project(conn)
+    db.seed_default_project(conn, "A Different Name")
 
-    assert len(db.list_projects(conn)) == 1
+    projects = db.list_projects(conn)
+    assert len(projects) == 1
+    assert projects[0]["name"] == "Test Project"
 
 
 def test_update_project_renames() -> None:
@@ -186,28 +188,6 @@ def test_delete_queue_removes_queue_and_dependents_even_if_annotated() -> None:
 
     assert db.get_queue(conn, queue["id"]) is None
     assert db.list_labels(conn, queue["id"]) == []
-
-
-def test_seed_default_queue_creates_starter_labels_and_query() -> None:
-    conn = _fresh_conn()
-    project = _seeded_project(conn)
-
-    db.seed_default_queue(conn, project["id"], "rx_assistant_agent")
-
-    queue = db.list_queues(conn, project["id"])[0]
-    assert [l["name"] for l in queue["labels"]] == ["Pass", "Neutral", "Fail"]
-    assert "invoke_agent rx_assistant_agent" in queue["query"]
-    assert queue["annotator_ids"] == []
-
-
-def test_seed_default_queue_is_idempotent() -> None:
-    conn = _fresh_conn()
-    project = _seeded_project(conn)
-    db.seed_default_queue(conn, project["id"], "rx_assistant_agent")
-
-    db.seed_default_queue(conn, project["id"], "rx_assistant_agent")
-
-    assert len(db.list_queues(conn, project["id"])) == 1
 
 
 def test_insert_queue_items_dedupes_by_trace_and_span() -> None:

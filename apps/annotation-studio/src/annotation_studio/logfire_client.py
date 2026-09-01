@@ -1,14 +1,11 @@
-import base64
 import hashlib
-import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
 from logfire.experimental.query_client import AsyncLogfireQueryClient
 
-AGENT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_]+$")
 TRACE_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 SPAN_ID_PATTERN = re.compile(r"^[0-9a-f]{16}$")
 
@@ -125,21 +122,12 @@ async def fetch_queue_item_content(read_token: str, items: list[tuple[str, str]]
             content[(row["trace_id"], row["span_id"])] = parse_interaction(row, trace_url)
     return content
 
-# How far back an interaction can be and still show up in fetch_project_interactions
-# (its own min_timestamp bound, below) — also used as the trace link's lookback window so
-# "Open trace in Logfire" is guaranteed to actually find the trace: the Logfire UI's own
-# default lookback is much shorter than this, and without an explicit `last=` window an
-# older trace's page would just render empty despite the trace_id filter being correct.
+# How far back a queue refresh scans for new matches (its own min_timestamp bound, in
+# routes.py's _run_refresh) — also used as the trace link's lookback window so "Open trace
+# in Logfire" is guaranteed to actually find the trace: the Logfire UI's own default
+# lookback is much shorter than this, and without an explicit `last=` window an older
+# trace's page would just render empty despite the trace_id filter being correct.
 LOOKBACK_DAYS = 14
-
-
-def validate_agent_name(name: str) -> None:
-    """Raise ValueError if `name` isn't safe to interpolate into the SQL span-name filter
-    below — it comes from a project's stored, UI-editable top_level_agent_name, so this is
-    the only thing standing between that field and a SQL-injection into Logfire's query
-    engine."""
-    if not AGENT_NAME_PATTERN.match(name):
-        raise ValueError(f"Invalid top_level_agent_name: {name!r}")
 
 
 def validate_trace_and_span(trace_id: str, span_id: str) -> None:
@@ -150,30 +138,6 @@ def validate_trace_and_span(trace_id: str, span_id: str) -> None:
         raise ValueError(f"Invalid trace_id: {trace_id!r}")
     if not SPAN_ID_PATTERN.match(span_id):
         raise ValueError(f"Invalid span_id: {span_id!r}")
-
-
-@dataclass(frozen=True)
-class Cursor:
-    start_timestamp: str
-    span_id: str
-
-
-def encode_cursor(cursor: Cursor) -> str:
-    payload = json.dumps(asdict(cursor)).encode("utf-8")
-    return base64.urlsafe_b64encode(payload).decode("ascii")
-
-
-def decode_cursor(value: str) -> Cursor:
-    try:
-        payload = json.loads(base64.urlsafe_b64decode(value.encode("ascii")))
-        start_timestamp = payload["start_timestamp"]
-        span_id = payload["span_id"]
-        datetime.fromisoformat(start_timestamp)  # raises ValueError if malformed
-        if not SPAN_ID_PATTERN.match(span_id):
-            raise ValueError(f"Invalid span_id in cursor: {span_id!r}")
-    except (ValueError, KeyError, TypeError, UnicodeDecodeError) as exc:
-        raise ValueError(f"Invalid cursor: {value!r}") from exc
-    return Cursor(start_timestamp=start_timestamp, span_id=span_id)
 
 
 @dataclass
@@ -263,56 +227,3 @@ def build_trace_link(base_url: str, organization_name: str, project_name: str, t
     # the literal double quotes the same way.
     last = quote(f'"{LOOKBACK_DAYS}d"')
     return f"{base_url}/{organization_name}/{project_name}?q=trace_id='{trace_id}'&last={last}"
-
-
-async def fetch_project_interactions(
-    read_token: str,
-    top_level_agent_name: str,
-    cursor: str | None,
-    limit: int,
-) -> tuple[list[Interaction], str | None]:
-    """Fetch one page of interactions (most-recent-first) for `top_level_agent_name`, each
-    with its Logfire trace URL already attached, using exclusive keyset pagination over
-    `(start_timestamp, span_id)` so a page boundary can neither skip nor duplicate a row when
-    several spans share a timestamp (a real risk with fast automated traffic). `cursor` is the
-    opaque encoding of the last row already shown (None for the first page). Requests one row
-    beyond `limit` to detect whether another page exists; `next_cursor` is None once the extra
-    row isn't there.
-    """
-    validate_agent_name(top_level_agent_name)
-
-    decoded = decode_cursor(cursor) if cursor else None
-    min_timestamp = datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS)
-    sql = (
-        "SELECT trace_id, span_id, start_timestamp, duration, attributes "
-        "FROM records "
-        f"WHERE span_name = 'invoke_agent {top_level_agent_name}' "
-    )
-    if decoded is not None:
-        # decode_cursor already validated these as an ISO timestamp and a 16-hex span id —
-        # query_json_rows has no way to bind this second predicate as a parameter, so an
-        # unvalidated cursor would otherwise be a SQL-injection surface here.
-        sql += (
-            f"AND (start_timestamp < timestamp '{decoded.start_timestamp}' "
-            f"OR (start_timestamp = timestamp '{decoded.start_timestamp}' "
-            f"AND span_id < '{decoded.span_id}')) "
-        )
-    sql += "ORDER BY start_timestamp DESC, span_id DESC"
-
-    async with AsyncLogfireQueryClient(read_token) as client:
-        info = await client.info()
-        result = await client.query_json_rows(sql, min_timestamp=min_timestamp, limit=limit + 1)
-        rows = result["rows"]
-        interactions = [
-            parse_interaction(
-                row,
-                build_trace_link(client.base_url, info["organization_name"], info["project_name"], row["trace_id"]),
-            )
-            for row in rows[:limit]
-        ]
-
-    next_cursor = None
-    if len(rows) > limit:
-        last = interactions[-1]
-        next_cursor = encode_cursor(Cursor(start_timestamp=last.start_timestamp, span_id=last.span_id))
-    return interactions, next_cursor

@@ -56,8 +56,11 @@ into `docker-compose.yml`.
    Remember the build context is the **repo root**, not `apps/<name>`, because of the
    `demo-core` path dependency.
 7. `docker-compose.yml` — add a service block for `<name>` (see `chat`'s entry), with its
-   own `profiles: ["<name>", "all"]`. Chaining to another demo is not a special mechanism —
-   just call that demo's Compose service name as an HTTP base URL.
+   own `profiles: ["<name>", "all"]`. Give its host port a `${<NAME>_PORT:-default}`
+   substitution rather than hardcoding it (see any existing service's `ports:` entry), and
+   add that `<NAME>_PORT` variable, defaulted, to the repo root's `.env.example`. Chaining
+   to another demo is not a special mechanism — just call that demo's Compose service name
+   as an HTTP base URL.
 8. Run `uv sync --all-packages` at the repo root to pick up the new workspace member (the
    root is a virtual workspace, so plain `uv sync` skips members nothing depends on), then
    `uv run pytest apps/<name>/tests/` and `docker compose --profile <name> config` before

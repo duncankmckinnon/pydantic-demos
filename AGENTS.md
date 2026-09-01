@@ -4,7 +4,7 @@
 
 `pydantic-demos` hosts multiple local-only agentic demo applications, each built with
 Pydantic AI (optionally Pydantic AI Harness), instrumented with Logfire, and evaluated
-with Pydantic Evals. Demos target different customer types, so each has its own UI and
+with Pydantic Evals. Demos target different customer types, so each typically has its own UI and
 its own Pydantic AI Gateway / Logfire credentials. There is no production deployment,
 secrets manager, or customer-facing auth in this repo — everything runs locally via Docker.
 
@@ -16,6 +16,11 @@ secrets manager, or customer-facing auth in this repo — everything runs locall
   (gitignored) / `.env.example`, `Dockerfile`, `src/<name>/`, and `tests/`.
 - `docker-compose.yml` — one service per demo, grouped into Compose `profiles` for running
   standalone or chained together.
+- `.env.example` (repo root; real `.env` is gitignored) — Compose-level configuration read
+  by `docker compose` itself when interpolating `docker-compose.yml` (currently just host
+  port overrides, one `<NAME>_PORT` variable per service). Distinct from each app's own
+  `apps/<name>/.env`, which only reaches that app's container at runtime and can't affect
+  anything `docker-compose.yml` itself needs resolved first, like a host port mapping.
 
 ## `demo_core` contract
 
@@ -41,18 +46,20 @@ two demos need the same thing).
 
 ## Per-app credentials
 
-Every `apps/<name>/.env` (gitignored) sets its own:
+The convention is for each `apps/<name>/.env` (gitignored) to set its own:
 
 ```
 PYDANTIC_AI_GATEWAY_API_KEY=
 LOGFIRE_TOKEN=
 ```
 
-This gives each demo an independent Gateway project/token and an independent Logfire
+giving that demo an independent Gateway project/token and an independent Logfire
 project/token — the Logfire project is derived from the token itself, so there is no
-separate project setting. `docker-compose.yml` loads each service's `.env` via its own
-`env_file:`; when running outside Docker, the app loads its own `apps/<name>/.env` via
-`load_dotenv()` at import time.
+separate project setting. This isn't a strict rule: a demo that doesn't call a model
+through the Gateway, or that needs a different credential shape, can deviate — document
+the actual set it uses in that demo's own README. `docker-compose.yml` loads each
+service's `.env` via its own `env_file:`; when running outside Docker, the app loads its
+own `apps/<name>/.env` via `load_dotenv()` at import time.
 
 ## Docker & chaining
 
@@ -60,6 +67,12 @@ separate project setting. `docker-compose.yml` loads each service's `.env` via i
 "Chaining" two demos together is not a special mechanism — a chained demo is just another
 `apps/<name>` whose config points at another demo's Compose service name as a base URL and
 calls it over HTTP, the same as any external API.
+
+Each service's host port in `docker-compose.yml` is a `${<NAME>_PORT:-default}`
+substitution rather than a hardcoded value — resolved by `docker compose` itself from a
+`.env` at the repo root (see `.env.example`), not from the app's own `apps/<name>/.env`,
+since a host port mapping is decided before the container (and its `env_file:`) exists. A
+new demo's service block should follow the same pattern.
 
 ## Infrastructure monitoring
 
