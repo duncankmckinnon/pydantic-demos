@@ -1,10 +1,23 @@
 import sqlite3
 
+import pytest
 from fastapi.testclient import TestClient
 
 import annotation_studio.main as annotation_studio_main
 import annotation_studio.routes as routes
 from annotation_studio.logfire_client import Interaction
+
+
+@pytest.fixture(autouse=True)
+def _stub_query_column_validation(monkeypatch):
+    # Queue creation calls validate_query_columns, a real Logfire network round-trip — tests
+    # use a fake token, so every test that creates a queue (most of them, via _seeded_queue_id)
+    # needs this stubbed out by default. A test asserting validation behavior itself overrides
+    # it again with its own fake, which layers fine on top of this one.
+    async def noop(read_token, query):
+        return None
+
+    monkeypatch.setattr(routes, "validate_query_columns", noop)
 
 
 class FakeWriter:
@@ -23,7 +36,7 @@ def _app(writer=None) -> TestClient:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     app = annotation_studio_main.create_annotation_studio_app(
-        send_to_logfire=False, connection=conn, writer=writer or FakeWriter()
+        send_to_logfire=False, connection=conn, writer=writer or FakeWriter(), default_project_name="Test Project"
     )
     return TestClient(app)
 
@@ -51,7 +64,7 @@ def _create_queue(client: TestClient, project_id: int, **overrides) -> dict:
 
 
 def _seeded_queue_id(client: TestClient, project_id: int) -> int:
-    return client.get(f"/api/projects/{project_id}/queues").json()[0]["id"]
+    return _create_queue(client, project_id)["id"]
 
 
 def _pass_label_id(client: TestClient, queue_id: int) -> int:
@@ -72,7 +85,7 @@ def test_list_projects_returns_seeded_project() -> None:
     response = client.get("/api/projects")
 
     assert response.status_code == 200
-    assert response.json()[0]["name"] == "rx-assistant"
+    assert response.json()[0]["name"] == "Test Project"
 
 
 def test_get_project_no_longer_includes_labels() -> None:
@@ -124,14 +137,14 @@ def test_get_logfire_info_returns_404_for_unknown_project() -> None:
     assert client.get("/api/projects/999/logfire-info").status_code == 404
 
 
-def test_list_queues_includes_seeded_default_queue() -> None:
+def test_list_queues_is_empty_for_a_fresh_project() -> None:
     client = _app()
     project_id = _project_id(client)
 
     response = client.get(f"/api/projects/{project_id}/queues")
 
     assert response.status_code == 200
-    assert response.json()[0]["name"] == "All rx_assistant interactions"
+    assert response.json() == []
 
 
 def test_create_queue_validates_query(monkeypatch) -> None:
@@ -184,7 +197,7 @@ def test_get_queue_includes_is_accessible(monkeypatch) -> None:
 def test_update_queue_renames() -> None:
     client = _app()
     project_id = _project_id(client)
-    queue_id = client.get(f"/api/projects/{project_id}/queues").json()[0]["id"]
+    queue_id = _seeded_queue_id(client, project_id)
 
     response = client.put(f"/api/queues/{queue_id}", json={"name": "Renamed"})
 
@@ -195,7 +208,7 @@ def test_update_queue_renames() -> None:
 def test_delete_queue_removes_it() -> None:
     client = _app()
     project_id = _project_id(client)
-    queue_id = client.get(f"/api/projects/{project_id}/queues").json()[0]["id"]
+    queue_id = _seeded_queue_id(client, project_id)
 
     response = client.delete(f"/api/queues/{queue_id}")
 
