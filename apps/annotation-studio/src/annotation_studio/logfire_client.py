@@ -188,12 +188,15 @@ def parse_interaction(row: dict, trace_url: str) -> Interaction:
     turn's input is the first new user text message (skipping tool_call_response messages,
     which also carry role='user'), and its output is `final_result` if Logfire captured one
     (even a scrubbed placeholder — rendered as-is), otherwise the last new assistant text
-    message. If `all_messages`/`new_message_index` are missing or malformed, falls back to
-    the raw attributes so nothing is silently hidden from the reviewer.
+    message. A first-turn conversation has nothing to index past (new_message_index would be
+    0), and the instrumentation omits zero-valued attributes entirely rather than emitting an
+    explicit 0 — so a missing key defaults to 0, not malformed. If `all_messages` is missing
+    or `new_message_index` is present but not an int, falls back to the raw row so nothing is
+    silently hidden from the reviewer.
     """
     attributes = row.get("attributes") or {}
     all_messages = attributes.get("pydantic_ai.all_messages")
-    new_message_index = attributes.get("pydantic_ai.new_message_index")
+    new_message_index = attributes.get("pydantic_ai.new_message_index", 0)
 
     if not isinstance(all_messages, list) or not isinstance(new_message_index, int):
         return Interaction(

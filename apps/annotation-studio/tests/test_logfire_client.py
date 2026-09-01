@@ -36,6 +36,33 @@ def test_parse_interaction_extracts_input_and_output_for_new_turn() -> None:
     assert interaction.raw_row is None
 
 
+def test_parse_interaction_treats_missing_new_message_index_as_zero() -> None:
+    # A first-turn conversation has no prior messages to index past, so its correct
+    # new_message_index is 0 — and the instrumentation omits zero-valued attributes
+    # entirely rather than emitting an explicit 0. Absence here must not be treated as
+    # malformed data (which would otherwise fall back to raw_row for every first-turn
+    # interaction — the common case, not an edge case).
+    row = {
+        "trace_id": "01a045b8d6d40acd6c98ee00f1a3fe93",
+        "span_id": "c7a2373c3fe61d3f",
+        "start_timestamp": "2026-08-28T00:00:00Z",
+        "duration": 1.0,
+        "attributes": {
+            "pydantic_ai.all_messages": [
+                {"role": "user", "parts": [{"type": "text", "content": "hi"}]},
+                {"role": "assistant", "parts": [{"type": "text", "content": "hello"}], "finish_reason": "stop"},
+            ],
+            "final_result": "hello",
+        },
+    }
+
+    interaction = parse_interaction(row, trace_url="https://example.test")
+
+    assert interaction.raw_row is None
+    assert interaction.input_text == "hi"
+    assert interaction.output_text == "hello"
+
+
 def test_parse_interaction_prefers_final_result_over_assistant_text() -> None:
     row = _load("final_result_present.json")
 
