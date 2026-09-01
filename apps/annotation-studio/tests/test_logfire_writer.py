@@ -23,7 +23,7 @@ class FakeLogfire:
 
 def annotation():
     return {"id": 11, "revision": 2, "trace_id": "01a045b8d6d40acd6c98ee00f1a3fe93",
-            "span_id": "c7a2373c3fe61d3f", "project_id": 1, "description": "Grounded"}
+            "span_id": "c7a2373c3fe61d3f", "queue_id": 1, "description": "Grounded"}
 
 
 def annotator():
@@ -72,6 +72,13 @@ def test_uses_explicit_traceparent_propagator(monkeypatch, fake_logfire):
     carrier, propagator = calls[0]
     assert carrier["traceparent"] == "00-01a045b8d6d40acd6c98ee00f1a3fe93-c7a2373c3fe61d3f-01"
     assert isinstance(propagator, TraceContextTextMapPropagator)
+
+
+def test_emits_queue_id_not_project_id(fake_logfire):
+    AnnotationWriter("write", client=fake_logfire).write(annotation(), annotator(), label())
+    attrs = fake_logfire.events[0]
+    assert attrs["queue_id"] == 1
+    assert "project_id" not in attrs
 
 
 def test_uses_logfire_feedback_attribute_conventions(fake_logfire):
