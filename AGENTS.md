@@ -4,9 +4,8 @@
 
 `pydantic-demos` hosts multiple local-only agentic demo applications, each built with
 Pydantic AI (optionally Pydantic AI Harness), instrumented with Logfire, and evaluated
-with Pydantic Evals. Demos target different customer types, so each has its own UI and
-its own Pydantic AI Gateway / Logfire credentials (with one exception — see "Per-app
-credentials" below). There is no production deployment,
+with Pydantic Evals. Demos target different customer types, so each typically has its own UI and
+its own Pydantic AI Gateway / Logfire credentials. There is no production deployment,
 secrets manager, or customer-facing auth in this repo — everything runs locally via Docker.
 
 ## Layout
@@ -47,25 +46,20 @@ two demos need the same thing).
 
 ## Per-app credentials
 
-Every `apps/<name>/.env` (gitignored) sets its own:
+The convention is for each `apps/<name>/.env` (gitignored) to set its own:
 
 ```
 PYDANTIC_AI_GATEWAY_API_KEY=
 LOGFIRE_TOKEN=
 ```
 
-This gives each demo an independent Gateway project/token and an independent Logfire
+giving that demo an independent Gateway project/token and an independent Logfire
 project/token — the Logfire project is derived from the token itself, so there is no
-separate project setting. `docker-compose.yml` loads each service's `.env` via its own
-`env_file:`; when running outside Docker, the app loads its own `apps/<name>/.env` via
-`load_dotenv()` at import time.
-
-`annotation-studio` is the one exception to this pattern: it's a tooling app, not a
-Gateway-calling agent, so it has no `PYDANTIC_AI_GATEWAY_API_KEY` at all. Instead it takes
-`LOGFIRE_TOKEN` (its own self-instrumentation, same as every other demo) plus
-`LOGFIRE_READ_TOKEN` / `LOGFIRE_WRITE_TOKEN` / `LOGFIRE_DATASETS_TOKEN`, all scoped to
-whichever Logfire project it's reviewing — which may or may not be another demo in this
-repo. See `apps/annotation-studio/README.md` for the full credential breakdown.
+separate project setting. This isn't a strict rule: a demo that doesn't call a model
+through the Gateway, or that needs a different credential shape, can deviate — document
+the actual set it uses in that demo's own README. `docker-compose.yml` loads each
+service's `.env` via its own `env_file:`; when running outside Docker, the app loads its
+own `apps/<name>/.env` via `load_dotenv()` at import time.
 
 ## Docker & chaining
 
