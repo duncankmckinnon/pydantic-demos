@@ -37,7 +37,8 @@ def create_annotation_studio_app(
 
     conn = connection if connection is not None else db.get_connection(app_settings.database_path)
     db.init_db(conn)
-    db.seed_default_project(conn, source_settings.top_level_agent_name)
+    db.seed_default_project(conn)
+    db.seed_default_queue(conn, db.list_projects(conn)[0]["id"], source_settings.top_level_agent_name)
 
     # `writer` injection lets tests supply a fake without ever calling
     # logfire.configure(local=True, ...) in the test suite.

@@ -44,7 +44,7 @@ class AnnotationWriter:
                 label_id=label["id"] if label else None,
                 label_name=label_name,
                 description=annotation["description"],
-                project_id=annotation["project_id"],
+                queue_id=annotation["queue_id"],
                 source_trace_id=annotation["trace_id"],
                 source_span_id=annotation["span_id"],
                 # Attribute names Logfire's own logfire.experimental.annotations.

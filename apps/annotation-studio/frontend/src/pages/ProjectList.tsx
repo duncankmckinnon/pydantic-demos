@@ -30,7 +30,6 @@ export function ProjectList() {
                 </span>
                 <div className="project-card-body">
                   <h2>{project.name}</h2>
-                  <p className="project-card-meta">Source agent: {project.top_level_agent_name}</p>
                 </div>
                 <span className="project-card-arrow" aria-hidden="true">
                   →

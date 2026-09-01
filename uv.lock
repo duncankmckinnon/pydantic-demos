@@ -59,6 +59,7 @@ dependencies = [
     { name = "demo-core" },
     { name = "fastapi" },
     { name = "logfire" },
+    { name = "pydantic-evals" },
     { name = "python-dotenv" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -68,6 +69,7 @@ requires-dist = [
     { name = "demo-core", editable = "packages/demo_core" },
     { name = "fastapi" },
     { name = "logfire" },
+    { name = "pydantic-evals" },
     { name = "python-dotenv" },
     { name = "uvicorn", extras = ["standard"] },
 ]
