@@ -220,6 +220,35 @@ def test_refresh_pulls_new_matches_and_applies_sampling(monkeypatch) -> None:
     assert response.json()["total_item_count"] == 1
 
 
+def test_refresh_always_scans_the_full_lookback_window_even_after_a_prior_refresh(monkeypatch) -> None:
+    # Regression: an earlier refresh (e.g. against a since-fixed, previously-broken query)
+    # must not permanently narrow later refreshes to "since that refresh" — a query that only
+    # now matches historical data must still find it.
+    captured_min_timestamps = []
+
+    async def fake_fetch_matches(read_token, query, min_timestamp, max_timestamp, limit):
+        captured_min_timestamps.append(min_timestamp)
+        return []
+
+    monkeypatch.setattr(routes, "fetch_queue_matches", fake_fetch_matches)
+    client = _app()
+    project_id = _project_id(client)
+    queue_id = _seeded_queue_id(client, project_id)
+
+    client.post(f"/api/queues/{queue_id}/refresh")  # first refresh sets last_refreshed_at
+    client.post(f"/api/queues/{queue_id}/refresh")  # second refresh must not narrow the window
+
+    assert len(captured_min_timestamps) == 2
+    # Both calls' min_timestamp must be at (or before) the full lookback floor, not the
+    # first call's much-more-recent last_refreshed_at.
+    from datetime import datetime, timedelta, timezone
+
+    from annotation_studio.logfire_client import LOOKBACK_DAYS
+
+    floor = datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS)
+    assert captured_min_timestamps[1] <= floor + timedelta(minutes=1)
+
+
 def test_refresh_returns_403_when_annotator_not_assigned(monkeypatch) -> None:
     monkeypatch.setattr(routes, "fetch_queue_matches", lambda *a, **k: _async_return([]))
     client = _app()

@@ -176,11 +176,12 @@ def register_routes(
             raise HTTPException(status_code=403, detail="not_assigned_to_queue")
 
         now = datetime.now(timezone.utc)
-        floor = now - timedelta(days=LOOKBACK_DAYS)
-        min_timestamp = floor
-        if queue["last_refreshed_at"]:
-            last = datetime.fromisoformat(queue["last_refreshed_at"])
-            min_timestamp = max(floor, last)
+        # Always scans the full lookback window rather than incrementally since
+        # last_refreshed_at — an earlier refresh (e.g. against a query that was broken or
+        # matched nothing at the time) must never permanently narrow later refreshes' search
+        # window once the query is fixed. last_refreshed_at is still recorded, purely as
+        # informational bookkeeping.
+        min_timestamp = now - timedelta(days=LOOKBACK_DAYS)
         try:
             matches = await fetch_queue_matches(source_settings.read_token, queue["query"], min_timestamp, now, limit=1000)
         except Exception as exc:
