@@ -205,6 +205,14 @@ def test_validate_query_strips_single_trailing_semicolon() -> None:
     assert logfire_client.validate_query("SELECT 1;") == "SELECT 1"
 
 
+def test_validate_query_accepts_a_cte_starting_with_with() -> None:
+    query = (
+        "WITH interactions AS (SELECT trace_id FROM records) "
+        "SELECT trace_id FROM interactions ORDER BY trace_id"
+    )
+    assert logfire_client.validate_query(query) == query
+
+
 @pytest.mark.parametrize(
     "query",
     [

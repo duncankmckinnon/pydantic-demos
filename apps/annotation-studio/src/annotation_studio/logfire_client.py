@@ -15,7 +15,7 @@ SPAN_ID_PATTERN = re.compile(r"^[0-9a-f]{16}$")
 QUERY_MAX_LENGTH = 5000
 REQUIRED_QUEUE_COLUMNS = ("trace_id", "span_id", "start_timestamp")
 
-_SELECT_PREFIX = re.compile(r"^\s*SELECT\b", re.IGNORECASE)
+_SELECT_PREFIX = re.compile(r"^\s*(WITH|SELECT)\b", re.IGNORECASE)
 _FORBIDDEN_KEYWORDS = re.compile(
     r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE|MERGE|EXEC|CALL)\b",
     re.IGNORECASE,
@@ -35,7 +35,7 @@ def validate_query(query: str) -> str:
     if len(stripped) > QUERY_MAX_LENGTH:
         raise ValueError(f"Query is too long (max {QUERY_MAX_LENGTH} characters)")
     if not _SELECT_PREFIX.match(stripped):
-        raise ValueError("Query must start with SELECT")
+        raise ValueError("Query must start with SELECT or WITH")
     if ";" in stripped:
         raise ValueError("Query must be a single statement (no ';')")
     if _FORBIDDEN_KEYWORDS.search(stripped):
