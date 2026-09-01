@@ -33,8 +33,10 @@ async def push_queue_dataset(
             inputs: Any = interaction.raw_row
             expected_output: Any = None
         else:
-            inputs = interaction.input_text
-            expected_output = interaction.output_text or None
+            # Logfire's hosted datasets API requires inputs/expected_output to be JSON
+            # objects, not bare strings — it rejects a raw string with a 422.
+            inputs = {"text": interaction.input_text}
+            expected_output = {"text": interaction.output_text} if interaction.output_text else None
         cases.append(
             Case(
                 name=f"{annotation['trace_id']}:{annotation['span_id']}:{annotation['annotator_id']}",

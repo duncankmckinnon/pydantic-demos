@@ -55,8 +55,10 @@ async def test_push_queue_dataset_builds_one_case_per_annotation(monkeypatch) ->
     pushed_dataset = fake_client.pushed[0]
     assert pushed_dataset.name == "my-dataset"
     case = pushed_dataset.cases[0]
-    assert case.inputs == "q"
-    assert case.expected_output == "a"
+    # Logfire's hosted datasets API requires inputs/expected_output to be JSON objects, not
+    # bare strings — it rejects a raw string with a 422 (confirmed against the real API).
+    assert case.inputs == {"text": "q"}
+    assert case.expected_output == {"text": "a"}
     assert case.metadata == {
         "label": "Pass", "description": "why", "annotator_name": "Ada",
         "trace_id": trace_id, "span_id": "c7a2373c3fe61d3f",
