@@ -5,7 +5,8 @@
 `pydantic-demos` hosts multiple local-only agentic demo applications, each built with
 Pydantic AI (optionally Pydantic AI Harness), instrumented with Logfire, and evaluated
 with Pydantic Evals. Demos target different customer types, so each has its own UI and
-its own Pydantic AI Gateway / Logfire credentials. There is no production deployment,
+its own Pydantic AI Gateway / Logfire credentials (with one exception — see "Per-app
+credentials" below). There is no production deployment,
 secrets manager, or customer-facing auth in this repo — everything runs locally via Docker.
 
 ## Layout
@@ -16,6 +17,11 @@ secrets manager, or customer-facing auth in this repo — everything runs locall
   (gitignored) / `.env.example`, `Dockerfile`, `src/<name>/`, and `tests/`.
 - `docker-compose.yml` — one service per demo, grouped into Compose `profiles` for running
   standalone or chained together.
+- `.env.example` (repo root; real `.env` is gitignored) — Compose-level configuration read
+  by `docker compose` itself when interpolating `docker-compose.yml` (currently just host
+  port overrides, one `<NAME>_PORT` variable per service). Distinct from each app's own
+  `apps/<name>/.env`, which only reaches that app's container at runtime and can't affect
+  anything `docker-compose.yml` itself needs resolved first, like a host port mapping.
 
 ## `demo_core` contract
 
@@ -54,12 +60,25 @@ separate project setting. `docker-compose.yml` loads each service's `.env` via i
 `env_file:`; when running outside Docker, the app loads its own `apps/<name>/.env` via
 `load_dotenv()` at import time.
 
+`annotation-studio` is the one exception to this pattern: it's a tooling app, not a
+Gateway-calling agent, so it has no `PYDANTIC_AI_GATEWAY_API_KEY` at all. Instead it takes
+`LOGFIRE_TOKEN` (its own self-instrumentation, same as every other demo) plus
+`LOGFIRE_READ_TOKEN` / `LOGFIRE_WRITE_TOKEN` / `LOGFIRE_DATASETS_TOKEN`, all scoped to
+whichever Logfire project it's reviewing — which may or may not be another demo in this
+repo. See `apps/annotation-studio/README.md` for the full credential breakdown.
+
 ## Docker & chaining
 
 `docker compose --profile <name> up` runs one demo. `--profile all` runs everything.
 "Chaining" two demos together is not a special mechanism — a chained demo is just another
 `apps/<name>` whose config points at another demo's Compose service name as a base URL and
 calls it over HTTP, the same as any external API.
+
+Each service's host port in `docker-compose.yml` is a `${<NAME>_PORT:-default}`
+substitution rather than a hardcoded value — resolved by `docker compose` itself from a
+`.env` at the repo root (see `.env.example`), not from the app's own `apps/<name>/.env`,
+since a host port mapping is decided before the container (and its `env_file:`) exists. A
+new demo's service block should follow the same pattern.
 
 ## Infrastructure monitoring
 
