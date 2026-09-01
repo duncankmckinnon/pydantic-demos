@@ -167,14 +167,7 @@ def register_routes(
             raise HTTPException(status_code=404, detail="queue_not_found")
         db.delete_queue(conn, queue_id)
 
-    @router.post("/queues/{queue_id}/refresh")
-    async def refresh_queue(queue_id: int, annotator_id: int | None = None) -> dict:
-        queue = db.get_queue(conn, queue_id)
-        if queue is None:
-            raise HTTPException(status_code=404, detail="queue_not_found")
-        if not _queue_is_accessible(queue, annotator_id):
-            raise HTTPException(status_code=403, detail="not_assigned_to_queue")
-
+    async def _run_refresh(queue: dict, queue_id: int) -> dict:
         now = datetime.now(timezone.utc)
         # Always scans the full lookback window rather than incrementally since
         # last_refreshed_at — an earlier refresh (e.g. against a query that was broken or
@@ -195,6 +188,27 @@ def register_routes(
         db.set_queue_last_refreshed(conn, queue_id, now.isoformat())
         total_item_count = len(db.list_queue_items(conn, queue_id, None, 10_000_000)[0])
         return {"new_item_count": new_item_count, "total_item_count": total_item_count}
+
+    @router.post("/queues/{queue_id}/refresh")
+    async def refresh_queue(queue_id: int, annotator_id: int | None = None) -> dict:
+        queue = db.get_queue(conn, queue_id)
+        if queue is None:
+            raise HTTPException(status_code=404, detail="queue_not_found")
+        if not _queue_is_accessible(queue, annotator_id):
+            raise HTTPException(status_code=403, detail="not_assigned_to_queue")
+        return await _run_refresh(queue, queue_id)
+
+    @router.post("/queues/{queue_id}/clear")
+    async def clear_queue(queue_id: int, annotator_id: int | None = None) -> dict:
+        # Wipes and rebuilds the queue's item list from scratch — for iterating on a query
+        # during setup. Never touches annotations (see db.clear_queue_items docstring).
+        queue = db.get_queue(conn, queue_id)
+        if queue is None:
+            raise HTTPException(status_code=404, detail="queue_not_found")
+        if not _queue_is_accessible(queue, annotator_id):
+            raise HTTPException(status_code=403, detail="not_assigned_to_queue")
+        db.clear_queue_items(conn, queue_id)
+        return await _run_refresh(queue, queue_id)
 
     @router.get("/queues/{queue_id}/items")
     async def list_items(queue_id: int, annotator_id: int | None = None, cursor: str | None = None) -> dict:

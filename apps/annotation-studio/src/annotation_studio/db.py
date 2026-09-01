@@ -371,6 +371,17 @@ def set_queue_last_refreshed(conn: sqlite3.Connection, queue_id: int, timestamp:
     conn.commit()
 
 
+def clear_queue_items(conn: sqlite3.Connection, queue_id: int) -> None:
+    """Wipes a queue's current membership so the next refresh rebuilds it from scratch — for
+    iterating on a query during setup, not for normal steady-state use (where membership is
+    meant to only ever grow). Deliberately leaves `annotations` untouched: they're addressed
+    by (queue_id, trace_id, span_id) independent of `queue_items`, so any existing grade
+    reappears automatically if that same trace/span is rediscovered by a later refresh."""
+    conn.execute("DELETE FROM queue_items WHERE queue_id = ?", (queue_id,))
+    conn.execute("UPDATE queues SET last_refreshed_at = NULL WHERE id = ?", (queue_id,))
+    conn.commit()
+
+
 def list_queue_items(
     conn: sqlite3.Connection, queue_id: int, cursor: str | None, limit: int
 ) -> tuple[list[dict], str | None]:

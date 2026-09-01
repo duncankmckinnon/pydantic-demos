@@ -95,6 +95,16 @@ export function refreshQueue(
   return request(`/api/queues/${queueId}/refresh${qs ? `?${qs}` : ""}`, { method: "POST" });
 }
 
+export function clearAndRefreshQueue(
+  queueId: number,
+  annotatorId: number | null,
+): Promise<{ new_item_count: number; total_item_count: number }> {
+  const params = new URLSearchParams();
+  if (annotatorId !== null) params.set("annotator_id", String(annotatorId));
+  const qs = params.toString();
+  return request(`/api/queues/${queueId}/clear${qs ? `?${qs}` : ""}`, { method: "POST" });
+}
+
 export function listQueueItems(queueId: number, annotatorId: number, cursor: string | null): Promise<QueueItemsPage> {
   const params = new URLSearchParams({ annotator_id: String(annotatorId) });
   if (cursor) params.set("cursor", cursor);

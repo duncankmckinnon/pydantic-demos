@@ -251,6 +251,37 @@ def test_list_queue_items_paginates_newest_first() -> None:
     assert cursor2 is None
 
 
+def test_clear_queue_items_empties_items_and_resets_last_refreshed() -> None:
+    conn = _fresh_conn()
+    project = _seeded_project(conn)
+    queue = _queue(conn, project["id"])
+    db.insert_queue_items(conn, queue["id"], [
+        {"trace_id": "t1", "span_id": "s1", "start_timestamp": "2026-01-01T00:00:00"},
+    ])
+    db.set_queue_last_refreshed(conn, queue["id"], "2026-01-01T00:00:00")
+
+    db.clear_queue_items(conn, queue["id"])
+
+    assert db.list_queue_items(conn, queue["id"], cursor=None, limit=10) == ([], None)
+    assert db.get_queue(conn, queue["id"])["last_refreshed_at"] is None
+
+
+def test_clear_queue_items_does_not_touch_annotations() -> None:
+    conn = _fresh_conn()
+    project = _seeded_project(conn)
+    queue = _queue(conn, project["id"])
+    pass_id = next(l["id"] for l in queue["labels"] if l["name"] == "Pass")
+    ada = db.create_annotator(conn, "Ada")
+    db.upsert_annotation(conn, queue["id"], "t1", "s1", ada["id"], pass_id, "kept")
+    db.insert_queue_items(conn, queue["id"], [
+        {"trace_id": "t1", "span_id": "s1", "start_timestamp": "2026-01-01T00:00:00"},
+    ])
+
+    db.clear_queue_items(conn, queue["id"])
+
+    assert db.get_annotation(conn, queue["id"], "t1", "s1", ada["id"])["description"] == "kept"
+
+
 def test_list_labels_is_queue_scoped() -> None:
     conn = _fresh_conn()
     project = _seeded_project(conn)

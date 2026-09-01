@@ -263,6 +263,45 @@ def test_refresh_returns_403_when_annotator_not_assigned(monkeypatch) -> None:
     assert response.status_code == 403
 
 
+def test_clear_wipes_existing_items_before_rebuilding(monkeypatch) -> None:
+    trace_id = "01a045b8d6d40acd6c98ee00f1a3fe93"
+    call_count = {"n": 0}
+
+    async def fake_fetch_matches(read_token, query, min_timestamp, max_timestamp, limit):
+        call_count["n"] += 1
+        span_id = "c7a2373c3fe61d3f" if call_count["n"] == 1 else "d7a2373c3fe61d3f"
+        return [{"trace_id": trace_id, "span_id": span_id, "start_timestamp": "2026-08-28T00:00:00Z"}]
+
+    monkeypatch.setattr(routes, "fetch_queue_matches", fake_fetch_matches)
+    monkeypatch.setattr(routes, "fetch_queue_item_content", lambda read_token, items: _async_return({}))
+    client = _app()
+    project_id = _project_id(client)
+    queue_id = _seeded_queue_id(client, project_id)
+    client.post(f"/api/queues/{queue_id}/refresh")  # seeds one item keyed on the first span_id
+
+    response = client.post(f"/api/queues/{queue_id}/clear")
+
+    assert response.status_code == 200
+    assert response.json() == {"new_item_count": 1, "total_item_count": 1}
+    items = client.get(f"/api/queues/{queue_id}/items?annotator_id={_create_annotator(client, 'Ada')['id']}").json()
+    assert len(items["items"]) == 1
+    assert items["items"][0]["span_id"] == "d7a2373c3fe61d3f"
+
+
+def test_clear_returns_403_when_annotator_not_assigned(monkeypatch) -> None:
+    monkeypatch.setattr(routes, "fetch_queue_matches", lambda *a, **k: _async_return([]))
+    client = _app()
+    project_id = _project_id(client)
+    ada = _create_annotator(client, "Ada")
+    outsider = _create_annotator(client, "Outsider")
+    queue_id = _seeded_queue_id(client, project_id)
+    client.put(f"/api/queues/{queue_id}", json={"annotator_ids": [ada["id"]]})
+
+    response = client.post(f"/api/queues/{queue_id}/clear?annotator_id={outsider['id']}")
+
+    assert response.status_code == 403
+
+
 def test_list_items_merges_only_the_requesting_annotators_grade(monkeypatch) -> None:
     async def fake_fetch_matches(read_token, query, min_timestamp, max_timestamp, limit):
         return [{"trace_id": "trace-1", "span_id": "span-1", "start_timestamp": "2026-08-28T00:00:00Z"}]

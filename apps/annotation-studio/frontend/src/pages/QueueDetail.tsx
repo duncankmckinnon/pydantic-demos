@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, Navigate, useParams } from "react-router-dom";
 
-import { createDataset, getQueue, listQueueItems, refreshQueue } from "../api";
+import { clearAndRefreshQueue, createDataset, getQueue, listQueueItems, refreshQueue } from "../api";
 import { useAnnotator } from "../annotator";
 import { AppHeader } from "../components/AppHeader";
 import { QueueItemRow } from "../components/QueueItemRow";
@@ -78,6 +78,25 @@ export function QueueDetail() {
     }
   };
 
+  const handleClearAndRefresh = async () => {
+    if (!confirm("Clear this queue's current items and rebuild from a fresh scan? Saved annotations are kept and will reappear if that item comes back.")) {
+      return;
+    }
+    setRefreshing(true);
+    setRefreshMessage(null);
+    try {
+      const result = await clearAndRefreshQueue(queueId, selectedId);
+      setRefreshMessage(`Cleared and rebuilt — ${result.total_item_count} item(s).`);
+      setItems([]);
+      setNextCursor(null);
+      loadItems(null);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   const handleCreateDataset = async () => {
     setDatasetSaving(true);
     setDatasetResult(null);
@@ -138,6 +157,9 @@ export function QueueDetail() {
             </Link>
             <button className="btn btn-secondary" onClick={handleRefresh} disabled={refreshing}>
               {refreshing ? "Refreshing…" : "Refresh"}
+            </button>
+            <button className="btn btn-secondary" onClick={handleClearAndRefresh} disabled={refreshing}>
+              Clear &amp; Refresh
             </button>
             {exploreBase && (
               <a
