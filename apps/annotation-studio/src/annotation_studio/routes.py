@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from annotation_studio import db
 from annotation_studio.logfire_client import (
     LOOKBACK_DAYS,
+    fetch_logfire_project_info,
     fetch_queue_item_content,
     fetch_queue_matches,
     sample_included,
@@ -98,6 +99,15 @@ def register_routes(
             return db.update_project(conn, project_id, payload.name)
         except db.ValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+
+    @router.get("/projects/{project_id}/logfire-info")
+    async def get_logfire_info(project_id: int) -> dict:
+        if db.get_project(conn, project_id) is None:
+            raise HTTPException(status_code=404, detail="project_not_found")
+        try:
+            return await fetch_logfire_project_info(source_settings.read_token)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Logfire query failed: {exc}")
 
     @router.get("/projects/{project_id}/queues")
     async def list_queues(project_id: int, annotator_id: int | None = None) -> list[dict]:

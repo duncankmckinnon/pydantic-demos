@@ -100,6 +100,30 @@ def test_put_project_renames() -> None:
     assert response.json()["name"] == "renamed"
 
 
+def test_get_logfire_info_returns_org_and_project(monkeypatch) -> None:
+    async def fake_info(read_token):
+        return {"base_url": "https://logfire-us.pydantic.dev", "organization_name": "duncan", "project_name": "rx-assistant-demo"}
+
+    monkeypatch.setattr(routes, "fetch_logfire_project_info", fake_info)
+    client = _app()
+    project_id = _project_id(client)
+
+    response = client.get(f"/api/projects/{project_id}/logfire-info")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "base_url": "https://logfire-us.pydantic.dev",
+        "organization_name": "duncan",
+        "project_name": "rx-assistant-demo",
+    }
+
+
+def test_get_logfire_info_returns_404_for_unknown_project() -> None:
+    client = _app()
+
+    assert client.get("/api/projects/999/logfire-info").status_code == 404
+
+
 def test_list_queues_includes_seeded_default_queue() -> None:
     client = _app()
     project_id = _project_id(client)

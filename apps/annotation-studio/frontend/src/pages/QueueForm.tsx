@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
-import { createQueue, getQueue, listAnnotators, updateQueue } from "../api";
+import { createQueue, getLogfireInfo, getQueue, listAnnotators, updateQueue } from "../api";
+import type { LogfireInfo } from "../api";
 import { AppHeader } from "../components/AppHeader";
 import type { Annotator, Label } from "../types";
 
@@ -44,12 +45,23 @@ export function QueueForm() {
   ]);
   const [annotators, setAnnotators] = useState<Annotator[]>([]);
   const [assignedIds, setAssignedIds] = useState<number[]>([]);
+  const [logfireInfo, setLogfireInfo] = useState<LogfireInfo | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     listAnnotators().then(setAnnotators);
   }, []);
+
+  useEffect(() => {
+    // projectId is known immediately when creating a queue (from the URL) but only after the
+    // queue itself loads when editing — either way, fetch once it's available so the Explore
+    // link works in both flows.
+    if (projectId === null) return;
+    getLogfireInfo(projectId)
+      .then(setLogfireInfo)
+      .catch(() => setLogfireInfo(null));
+  }, [projectId]);
 
   useEffect(() => {
     if (!isEdit || !queueIdParam) return;
@@ -144,6 +156,16 @@ export function QueueForm() {
               <button type="button" className="btn-link" onClick={copyQuery}>
                 Copy query
               </button>
+              {logfireInfo && (
+                <a
+                  className="btn-link"
+                  href={`${logfireInfo.base_url}/${logfireInfo.organization_name}/${logfireInfo.project_name}/explore?q=${encodeURIComponent(query)}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Open in Logfire Explore ↗
+                </a>
+              )}
             </div>
           </div>
 

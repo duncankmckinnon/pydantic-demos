@@ -50,6 +50,16 @@ export function deleteAnnotator(id: number): Promise<void> {
   return request<void>(`/api/annotators/${id}`, { method: "DELETE" });
 }
 
+export interface LogfireInfo {
+  base_url: string;
+  organization_name: string;
+  project_name: string;
+}
+
+export function getLogfireInfo(projectId: number): Promise<LogfireInfo> {
+  return request<LogfireInfo>(`/api/projects/${projectId}/logfire-info`);
+}
+
 export interface QueueDraft {
   name: string;
   query: string;

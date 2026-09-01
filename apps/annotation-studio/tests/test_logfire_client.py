@@ -370,6 +370,19 @@ async def test_fetch_queue_item_content_rejects_malformed_ids() -> None:
         await logfire_client.fetch_queue_item_content("test-token", [("not-hex", "c7a2373c3fe61d3f")])
 
 
+async def test_fetch_logfire_project_info_returns_base_url_org_and_project(monkeypatch) -> None:
+    fake_client = FakeQueryClient([])
+    monkeypatch.setattr(logfire_client, "AsyncLogfireQueryClient", lambda read_token: fake_client)
+
+    info = await logfire_client.fetch_logfire_project_info("test-token")
+
+    assert info == {
+        "base_url": "https://logfire-us.pydantic.dev",
+        "organization_name": "duncan",
+        "project_name": "rx-assistant-demo",
+    }
+
+
 def test_build_explore_link_includes_project_path_and_query() -> None:
     url = logfire_client.build_explore_link(
         "https://logfire-us.pydantic.dev", "duncan", "rx-assistant-demo", "SELECT 1"

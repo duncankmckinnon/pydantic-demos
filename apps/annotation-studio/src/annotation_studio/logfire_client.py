@@ -83,6 +83,20 @@ async def fetch_queue_matches(
     return [row for row in result["rows"] if all(key in row for key in REQUIRED_QUEUE_COLUMNS)]
 
 
+async def fetch_logfire_project_info(read_token: str) -> dict:
+    """The org/project path and base URL needed to build a Logfire UI link, independent of any
+    query result — lets the queue editor offer an Explore link before a queue has any items
+    (or exists) yet, not just on the queue detail page where an item's own trace_url happened
+    to already carry this."""
+    async with AsyncLogfireQueryClient(read_token) as client:
+        info = await client.info()
+        return {
+            "base_url": client.base_url,
+            "organization_name": info["organization_name"],
+            "project_name": info["project_name"],
+        }
+
+
 def build_explore_link(base_url: str, organization_name: str, project_name: str, query: str) -> str:
     # Best-effort: Logfire's docs don't confirm the Explore page reads a `q` URL param the way
     # the live view does (see build_trace_link) — if it doesn't, this just opens Explore itself,
