@@ -4,6 +4,15 @@
 # container's runtime environment and can't affect a host port mapping decided before the
 # container exists. Each container's own internal port is fixed regardless.
 services:
+  audio-demo:
+    build:
+      context: .
+      dockerfile: apps/audio-demo/Dockerfile
+    env_file: apps/audio-demo/.env
+    ports:
+      - "${AUDIO_DEMO_PORT:-8004}:8000"
+    profiles: ["audio-demo", "all"]
+
   chat:
     build:
       context: .

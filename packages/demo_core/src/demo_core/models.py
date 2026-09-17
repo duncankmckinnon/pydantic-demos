@@ -29,3 +29,16 @@ def get_model(api_format: str, model_name: str, settings: GatewaySettings) -> Mo
         )
     provider = gateway_provider(api_format, api_key=settings.api_key)
     return model_cls(model_name, provider=provider)
+
+
+def get_realtime_model(model_name: str, settings: GatewaySettings):
+    """Build an OpenAI realtime model through the same per-app Gateway credentials.
+
+    RealtimeModel has a separate session interface from Model, so it cannot go in
+    _MODEL_CLASSES. Import lazily so text-only demos do not need realtime extras.
+    """
+    from pydantic_ai.realtime.openai import OpenAIRealtimeModel
+
+    return OpenAIRealtimeModel(
+        model_name, provider=gateway_provider("openai", api_key=settings.api_key)
+    )
