@@ -16,6 +16,8 @@ and Logfire. See [AGENTS.md](AGENTS.md) for the repo structure and how to add a 
 
 ## Demos
 
+- [`audio-demo`](apps/audio-demo/README.md) — real-time, interruptible voice conversations
+  with live transcripts, Pydantic AI Gateway, and agent traces in Logfire.
 - [`chat`](apps/chat/README.md) — general-purpose chat assistant with web search,
   per-conversation memory, and live Pydantic AI docs lookup.
 - [`rx-assistant`](apps/rx-assistant/README.md) — pharmacy prescription assistant grounded

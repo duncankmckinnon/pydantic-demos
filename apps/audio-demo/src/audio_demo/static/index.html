@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Voice · Pydantic demos</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script type="module" src="/static/app.js"></script>
+</head>
+<body>
+  <main>
+    <header><a href="/">Pydantic <span>/ demos</span></a><span class="badge">REALTIME VOICE</span></header>
+    <section class="intro">
+      <p class="eyebrow">A CONVERSATION, OUT LOUD</p>
+      <h1>Let's talk.</h1>
+      <p>Speak naturally. Interrupt anytime.<br>Your conversation appears here as you go.</p>
+    </section>
+    <section class="call-panel" aria-label="Voice controls">
+      <div class="orb" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>
+      <p id="status" role="status">Ready when you are</p>
+      <div class="controls">
+        <button id="start">Start conversation <span aria-hidden="true">↗</span></button>
+        <button id="mute" class="secondary" disabled aria-pressed="false">Mute microphone</button>
+        <button id="stop" class="secondary" disabled>End call</button>
+      </div>
+      <p class="hint">Microphone access required · Headphones recommended</p>
+      <p id="error" role="alert" hidden></p>
+    </section>
+    <section class="transcript-panel" aria-label="Conversation transcript">
+      <div class="section-label"><h2>Conversation</h2><span id="tool-status"></span></div>
+      <div id="transcript" role="log" aria-live="polite" aria-relevant="additions text">
+        <p id="empty">Your words, and the assistant's replies, will appear here.<br>Try: “Can you check the payments on account 123?”</p>
+      </div>
+    </section>
+    <footer>AI-generated voice · Sample payment data<br>Conversation transcripts and tool activity are sent to this demo's Logfire project when tracing is enabled.</footer>
+  </main>
+</body>
+</html>
