@@ -1,4 +1,5 @@
 import uuid
+from types import SimpleNamespace
 
 import applicant_support.main
 import pytest
@@ -7,6 +8,7 @@ from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from applicant_support.config import AgentConfig, ResolvedAgentConfig
+from applicant_support.evals.experiments import ExperimentRunSummary
 
 
 def _fixed_reply_model(text: str = "Here is your application update.") -> FunctionModel:
@@ -59,6 +61,15 @@ def test_index_renders_applicant_portal_controls(tmp_path) -> None:
     assert 'id="application-id"' in response.text
     assert "APP-1001" in response.text
     assert "Did I pass the screening?" in response.text
+    assert 'id="model-select"' not in response.text
+    assert 'id="resolved-model"' in response.text
+    assert 'id="prompt-fingerprint"' in response.text
+    assert 'id="new-session"' in response.text
+    assert 'id="full-demo-evals"' in response.text
+    assert 'id="model-smoke"' in response.text
+    assert 'id="prompt-smoke"' in response.text
+    assert 'id="experiment-status"' in response.text
+    assert "Open Logfire" in response.text
 
 
 def test_live_agent_is_built_with_online_evaluation(monkeypatch, tmp_path) -> None:
@@ -78,6 +89,98 @@ def test_live_agent_is_built_with_online_evaluation(monkeypatch, tmp_path) -> No
     )
 
     assert list(seen["capabilities"]) == [applicant_support_online_evaluation]
+
+
+def test_chat_forwards_full_demo_evaluation_flag(monkeypatch, tmp_path) -> None:
+    seen: dict[str, object] = {}
+
+    async def fake_turn(agent, **kwargs):
+        seen.update(kwargs["metadata"])
+        return SimpleNamespace(output="Reply", all_messages=lambda: [])
+
+    app = applicant_support.main.create_applicant_support_app(
+        send_to_logfire=False, database_path=tmp_path / "applicants.sqlite3"
+    )
+    monkeypatch.setattr(applicant_support.main, "run_applicant_turn", fake_turn)
+    monkeypatch.setattr(applicant_support.main, "get_model", lambda *args: object())
+
+    response = TestClient(app).post(
+        "/api/chat",
+        json=_valid_payload(full_demo_evals=True),
+    )
+
+    assert response.status_code == 200
+    assert seen["force_online_evals"] is True
+
+
+def _experiment_summary(kind: str = "model") -> ExperimentRunSummary:
+    return ExperimentRunSummary(
+        kind=kind,
+        comparison_group=f"{kind}-group",
+        candidate="managed-control",
+        experiment_name=f"applicant_support_{kind}_group_managed-control",
+        task_name=f"applicant_support_agent:{kind}:managed-control",
+        case_count=3,
+        model_name="anthropic:claude-sonnet-5",
+        prompt_fingerprint="abc123def456",
+    )
+
+
+def test_smoke_experiment_endpoint_enqueues_and_serializes_job(monkeypatch, tmp_path) -> None:
+    seen: list[tuple[str, str]] = []
+
+    async def fake_run(kind, scope, gateway_settings):
+        seen.append((kind, scope))
+        return [_experiment_summary(kind)]
+
+    monkeypatch.setattr(applicant_support.main, "_run_experiment_job", fake_run)
+    app = applicant_support.main.create_applicant_support_app(
+        send_to_logfire=False, database_path=tmp_path / "applicants.sqlite3"
+    )
+    with TestClient(app) as client:
+        launched = client.post("/api/experiments/model/smoke")
+        job_id = launched.json()["id"]
+        status = client.get(f"/api/experiments/jobs/{job_id}")
+
+    assert launched.status_code == 202
+    assert status.status_code == 200
+    assert status.json()["kind"] == "model"
+    assert status.json()["scope"] == "smoke"
+    assert status.json()["status"] in {"queued", "running", "completed"}
+    assert seen in ([], [("model", "smoke")])
+
+
+def test_full_experiment_requires_successful_matching_smoke(monkeypatch, tmp_path) -> None:
+    async def fake_run(kind, scope, gateway_settings):
+        return [_experiment_summary(kind)]
+
+    monkeypatch.setattr(applicant_support.main, "_run_experiment_job", fake_run)
+    app = applicant_support.main.create_applicant_support_app(
+        send_to_logfire=False, database_path=tmp_path / "applicants.sqlite3"
+    )
+    registry = applicant_support.main._JOB_REGISTRY
+
+    failed = registry.create(kind="model", scope="smoke")
+    registry.start(failed.id)
+    registry.fail(failed.id, RuntimeError("failure"))
+    mismatched = registry.create(kind="prompt", scope="smoke")
+    registry.start(mismatched.id)
+    registry.complete(mismatched.id, [_experiment_summary("prompt")])
+
+    with TestClient(app) as client:
+        unknown = client.post(
+            "/api/experiments/model/full", json={"smoke_job_id": "missing"}
+        )
+        failed_response = client.post(
+            "/api/experiments/model/full", json={"smoke_job_id": failed.id}
+        )
+        mismatch_response = client.post(
+            "/api/experiments/model/full", json={"smoke_job_id": mismatched.id}
+        )
+
+    assert unknown.status_code == 404
+    assert failed_response.status_code == 409
+    assert mismatch_response.status_code == 409
 
 
 def test_chat_returns_reply_and_sets_safe_session_cookie(monkeypatch, tmp_path) -> None:
