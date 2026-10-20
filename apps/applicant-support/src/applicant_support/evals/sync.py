@@ -11,7 +11,7 @@ def main() -> None:
     with create_dataset_client() as client:
         detail = sync_seed_dataset(client)
     print(f"Dataset: {DATASET_NAME}")
-    print(f"Dataset ID: {detail.id}")
+    print(f"Dataset ID: {detail['id']}")
     print(f"Seed case count: {len(seed.cases)}")
 
 

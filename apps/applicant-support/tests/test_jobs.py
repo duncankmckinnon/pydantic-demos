@@ -12,7 +12,7 @@ def _summary() -> ExperimentRunSummary:
         experiment_name="experiment-1",
         task_name="applicant_support_agent:model:control",
         case_count=3,
-        model_name="openai-responses:gpt-5-mini",
+        model_name="openai-responses:gpt-5.4-mini",
         prompt_fingerprint="abc123def456",
     )
 

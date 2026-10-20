@@ -333,7 +333,7 @@ def test_chat_returns_reply_and_sets_safe_session_cookie(monkeypatch, tmp_path) 
 def test_chat_reuses_history_and_config_for_same_session(monkeypatch, tmp_path) -> None:
     first_config = _resolved_config()
     promoted_config = _resolved_config(
-        model_name="gpt-5-mini", fingerprint="prompt-b456"
+        model_name="gpt-5.4-mini", fingerprint="prompt-b456"
     )
     resolutions = iter([first_config, promoted_config])
     app = applicant_support.main.create_applicant_support_app(
@@ -369,7 +369,7 @@ def test_delete_session_picks_up_promoted_config(monkeypatch, tmp_path) -> None:
     configs = iter(
         [
             _resolved_config(),
-            _resolved_config(model_name="gpt-5-mini", fingerprint="prompt-b456"),
+            _resolved_config(model_name="gpt-5.4-mini", fingerprint="prompt-b456"),
         ]
     )
     monkeypatch.setattr(
@@ -393,7 +393,7 @@ def test_delete_session_picks_up_promoted_config(monkeypatch, tmp_path) -> None:
     assert reset.status_code == 204
     assert old_session_id not in applicant_support.main._SESSIONS
     assert second.cookies["session_id"] != old_session_id
-    assert second.json()["model_name"] == "openai-responses:gpt-5-mini"
+    assert second.json()["model_name"] == "openai-responses:gpt-5.4-mini"
     assert second.json()["prompt_fingerprint"] == "prompt-b456"
 
 

@@ -107,7 +107,7 @@ async def test_shared_runner_applies_config_history_and_safe_metadata(
     prompt = "Use the application lookup tool before answering status questions."
     config = ResolvedAgentConfig(
         prompt=prompt,
-        model=AgentConfig(api_format="openai-responses", model_name="gpt-5-mini"),
+        model=AgentConfig(api_format="openai-responses", model_name="gpt-5.4-mini"),
         prompt_fingerprint="abc123def456",
         prompt_source="managed",
         model_source="managed",
@@ -136,7 +136,7 @@ async def test_shared_runner_applies_config_history_and_safe_metadata(
     assert run_kwargs["message_history"] == history
     assert run_kwargs["metadata"] == {
         "application_id": "APP-1001",
-        "resolved_model": "openai-responses:gpt-5-mini",
+        "resolved_model": "openai-responses:gpt-5.4-mini",
         "prompt_fingerprint": "abc123def456",
         "prompt_source": "managed",
         "model_source": "managed",

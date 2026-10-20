@@ -8,6 +8,7 @@ from applicant_support.config import AgentConfig
 from applicant_support.evals.dataset import build_seed_dataset
 from applicant_support.evals.evaluators import JUDGE_MODEL, SHARED_EVALUATORS
 from applicant_support.evals.experiments import (
+    MODEL_CANDIDATES,
     ExperimentCandidate,
     ExperimentExecutionError,
     ExperimentRequest,
@@ -41,6 +42,15 @@ class BrokenEvaluator(Evaluator):
         raise RuntimeError("judge unavailable")
 
 
+def test_model_candidates_use_gateway_verified_routes() -> None:
+    choices = {candidate.model_choice for candidate in MODEL_CANDIDATES}
+
+    assert ("openai-responses", "gpt-5.4-mini") in choices
+    assert ("openai-responses", "gpt-5-mini") not in choices
+    assert ("anthropic", "claude-haiku-5-5") in choices
+    assert ("anthropic", "claude-haiku-5.5") not in choices
+
+
 async def test_comparisons_hold_one_dimension_and_emit_complete_metadata(
     monkeypatch,
 ) -> None:
@@ -71,14 +81,14 @@ async def test_comparisons_hold_one_dimension_and_emit_complete_metadata(
                 label="openai-mini",
                 prompt="Fixed prompt",
                 model=AgentConfig(
-                    api_format="openai-responses", model_name="gpt-5-mini"
+                    api_format="openai-responses", model_name="gpt-5.4-mini"
                 ),
             ),
             ExperimentCandidate(
                 label="anthropic-haiku",
                 prompt="Fixed prompt",
                 model=AgentConfig(
-                    api_format="anthropic", model_name="claude-haiku-5.5"
+                    api_format="anthropic", model_name="claude-haiku-5-5"
                 ),
             ),
         ],
@@ -91,8 +101,8 @@ async def test_comparisons_hold_one_dimension_and_emit_complete_metadata(
 
     assert {config.prompt for config in run_configs} == {"Fixed prompt"}
     assert {config.model.model_choice for config in run_configs} == {
-        ("openai-responses", "gpt-5-mini"),
-        ("anthropic", "claude-haiku-5.5"),
+        ("openai-responses", "gpt-5.4-mini"),
+        ("anthropic", "claude-haiku-5-5"),
     }
     assert all(call["outputs"] == [
         ApplicantSupportEvalOutput(reply="Test reply"),
@@ -102,7 +112,7 @@ async def test_comparisons_hold_one_dimension_and_emit_complete_metadata(
 
     run_configs.clear()
     prompt_dataset = FakeDataset()
-    fixed_model = AgentConfig(api_format="openai-responses", model_name="gpt-5-mini")
+    fixed_model = AgentConfig(api_format="openai-responses", model_name="gpt-5.4-mini")
     prompt_request = ExperimentRequest(
         kind="prompt",
         comparison_group="prompt-group",
@@ -124,7 +134,7 @@ async def test_comparisons_hold_one_dimension_and_emit_complete_metadata(
         "Tool-first prompt",
     }
     assert {config.model.model_choice for config in run_configs} == {
-        ("openai-responses", "gpt-5-mini")
+        ("openai-responses", "gpt-5.4-mini")
     }
     assert built_capabilities == [(), (), (), ()]
     assert model_dataset.evaluators is SHARED_EVALUATORS
@@ -171,7 +181,7 @@ async def test_case_task_uses_fresh_seeded_database_every_time(monkeypatch) -> N
     candidate = ExperimentCandidate(
         label="isolation",
         prompt="Prompt",
-        model=AgentConfig(api_format="openai-responses", model_name="gpt-5-mini"),
+        model=AgentConfig(api_format="openai-responses", model_name="gpt-5.4-mini"),
     )
     task = _build_case_task(agent=object(), candidate=candidate, model=object())
     inputs = build_seed_dataset().cases[3].inputs
@@ -202,14 +212,14 @@ async def test_comparison_rejects_task_and_evaluator_failures(monkeypatch) -> No
                 label="candidate-a",
                 prompt="Prompt A",
                 model=AgentConfig(
-                    api_format="openai-responses", model_name="gpt-5-mini"
+                    api_format="openai-responses", model_name="gpt-5.4-mini"
                 ),
             ),
             ExperimentCandidate(
                 label="candidate-b",
                 prompt="Prompt A",
                 model=AgentConfig(
-                    api_format="anthropic", model_name="claude-haiku-5.5"
+                    api_format="anthropic", model_name="claude-haiku-5-5"
                 ),
             ),
         ],
@@ -258,14 +268,14 @@ async def test_comparison_rejects_empty_dataset() -> None:
                 label="candidate-a",
                 prompt="Prompt A",
                 model=AgentConfig(
-                    api_format="openai-responses", model_name="gpt-5-mini"
+                    api_format="openai-responses", model_name="gpt-5.4-mini"
                 ),
             ),
             ExperimentCandidate(
                 label="candidate-b",
                 prompt="Prompt B",
                 model=AgentConfig(
-                    api_format="openai-responses", model_name="gpt-5-mini"
+                    api_format="openai-responses", model_name="gpt-5.4-mini"
                 ),
             ),
         ],

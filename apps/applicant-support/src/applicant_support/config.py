@@ -30,8 +30,8 @@ ALLOWED_MODELS = frozenset(
     {
         DEFAULT_MODEL.model_choice,
         ("openai-responses", "gpt-5.6"),
-        ("openai-responses", "gpt-5-mini"),
-        ("anthropic", "claude-haiku-5.5"),
+        ("openai-responses", "gpt-5.4-mini"),
+        ("anthropic", "claude-haiku-5-5"),
     }
 )
 

@@ -142,3 +142,29 @@ def test_load_fetches_typed_hosted_cases_and_applies_code_evaluators() -> None:
     assert "trace-derived-frustration" in {case.name for case in dataset.cases}
     assert list(dataset.evaluators) == SHARED_EVALUATORS
     assert client.push_calls == []
+
+
+def test_sync_cli_prints_mapping_dataset_detail(monkeypatch, capsys) -> None:
+    import applicant_support.evals.sync as sync_module
+
+    class FakeClientContext:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, *args):
+            return None
+
+    monkeypatch.setattr(sync_module, "create_dataset_client", FakeClientContext)
+    monkeypatch.setattr(
+        sync_module,
+        "sync_seed_dataset",
+        lambda client: {
+            "id": "00000000-0000-0000-0000-000000000123",
+            "name": DATASET_NAME,
+        },
+    )
+
+    sync_module.main()
+
+    output = capsys.readouterr().out
+    assert "Dataset ID: 00000000-0000-0000-0000-000000000123" in output

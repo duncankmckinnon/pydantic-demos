@@ -41,7 +41,7 @@ The two managed variables are:
 
 - `applicant_support_prompt`: the complete system instruction as a string;
 - `applicant_support_model`: an object with `api_format` and `model_name`, for example
-  `{"api_format":"openai-responses","model_name":"gpt-5-mini"}`.
+  `{"api_format":"openai-responses","model_name":"gpt-5.4-mini"}`.
 
 Missing or invalid managed values fall back to the code defaults. A model must also appear in
 the code allowlist; managed variables cannot route an arbitrary model.

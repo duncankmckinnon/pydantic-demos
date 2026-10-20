@@ -34,8 +34,8 @@ from demo_core.settings import GatewaySettings
 ExperimentKind = Literal["model", "prompt"]
 
 MODEL_CANDIDATES = (
-    AgentConfig(api_format="openai-responses", model_name="gpt-5-mini"),
-    AgentConfig(api_format="anthropic", model_name="claude-haiku-5.5"),
+    AgentConfig(api_format="openai-responses", model_name="gpt-5.4-mini"),
+    AgentConfig(api_format="anthropic", model_name="claude-haiku-5-5"),
 )
 
 PROMPT_CANDIDATES = (

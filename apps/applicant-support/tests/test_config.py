@@ -31,7 +31,7 @@ def test_resolve_agent_config_uses_managed_values_and_safe_metadata(
     import applicant_support.config as config_module
 
     prompt = "Always look up application facts before answering."
-    model = {"api_format": "openai-responses", "model_name": "gpt-5-mini"}
+    model = {"api_format": "openai-responses", "model_name": "gpt-5.4-mini"}
     monkeypatch.setattr(config_module, "PROMPT_VARIABLE", FakeVariable(prompt))
     monkeypatch.setattr(config_module, "MODEL_VARIABLE", FakeVariable(model))
 
@@ -46,7 +46,7 @@ def test_resolve_agent_config_uses_managed_values_and_safe_metadata(
     assert len(first.prompt_fingerprint) == 12
     assert prompt not in repr(first.trace_metadata())
     assert first.trace_metadata() == {
-        "resolved_model": "openai-responses:gpt-5-mini",
+        "resolved_model": "openai-responses:gpt-5.4-mini",
         "prompt_fingerprint": first.prompt_fingerprint,
         "prompt_source": "managed",
         "model_source": "managed",
