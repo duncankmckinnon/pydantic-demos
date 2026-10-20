@@ -4,6 +4,15 @@
 # container's runtime environment and can't affect a host port mapping decided before the
 # container exists. Each container's own internal port is fixed regardless.
 services:
+  applicant-support:
+    build:
+      context: .
+      dockerfile: apps/applicant-support/Dockerfile
+    env_file: apps/applicant-support/.env
+    ports:
+      - "${APPLICANT_SUPPORT_PORT:-8005}:8000"
+    profiles: ["applicant-support", "all"]
+
   chat:
     build:
       context: .

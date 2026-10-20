@@ -228,4 +228,7 @@ apps/annotation-studio/frontend/*.tsbuildinfo
 
 # annotation-studio local SQLite data
 apps/annotation-studio/data/
+
+# applicant-support local SQLite data
+apps/applicant-support/data/
 *.code-workspace
