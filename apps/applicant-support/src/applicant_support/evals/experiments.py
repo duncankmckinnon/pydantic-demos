@@ -188,7 +188,6 @@ def _build_case_task(
                 model=model,
                 metadata={
                     "experiment_candidate": candidate.label,
-                    "force_online_evals": False,
                 },
             )
             return ApplicantSupportEvalOutput(reply=str(result.output))

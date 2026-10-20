@@ -72,7 +72,8 @@ def test_index_renders_applicant_portal_controls(tmp_path) -> None:
     assert 'id="resolved-model"' in response.text
     assert 'id="prompt-fingerprint"' in response.text
     assert 'id="new-session"' in response.text
-    assert 'id="full-demo-evals"' in response.text
+    assert 'id="full-demo-evals"' not in response.text
+    assert "All five evaluations run after every chat turn." in response.text
     assert 'id="model-smoke"' in response.text
     assert 'id="prompt-smoke"' in response.text
     assert 'id="experiment-status"' in response.text
@@ -83,7 +84,7 @@ def test_index_renders_applicant_portal_controls(tmp_path) -> None:
 
 def test_live_agent_is_built_with_online_evaluation(monkeypatch, tmp_path) -> None:
     from applicant_support.agent import build_agent as real_build_agent
-    from applicant_support.evals.online import applicant_support_online_evaluation
+    from applicant_support.evals.online import APPLICANT_SUPPORT_ONLINE_EVALUATION
 
     seen: dict[str, object] = {}
 
@@ -97,10 +98,10 @@ def test_live_agent_is_built_with_online_evaluation(monkeypatch, tmp_path) -> No
         send_to_logfire=False, database_path=tmp_path / "applicants.sqlite3"
     )
 
-    assert list(seen["capabilities"]) == [applicant_support_online_evaluation]
+    assert list(seen["capabilities"]) == [APPLICANT_SUPPORT_ONLINE_EVALUATION]
 
 
-def test_chat_forwards_full_demo_evaluation_flag(monkeypatch, tmp_path) -> None:
+def test_chat_metadata_does_not_control_online_eval_sampling(monkeypatch, tmp_path) -> None:
     seen: dict[str, object] = {}
 
     async def fake_turn(agent, **kwargs):
@@ -113,13 +114,10 @@ def test_chat_forwards_full_demo_evaluation_flag(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(applicant_support.main, "run_applicant_turn", fake_turn)
     monkeypatch.setattr(applicant_support.main, "get_model", lambda *args: object())
 
-    response = TestClient(app).post(
-        "/api/chat",
-        json=_valid_payload(full_demo_evals=True),
-    )
+    response = TestClient(app).post("/api/chat", json=_valid_payload())
 
     assert response.status_code == 200
-    assert seen["force_online_evals"] is True
+    assert "force_online_evals" not in seen
 
 
 def _experiment_summary(kind: str = "model") -> ExperimentRunSummary:

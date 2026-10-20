@@ -133,11 +133,10 @@ The LLM judges will use a stable Gateway model that is not the candidate model u
 Their structured outputs will include both a category/score and a short reason so failures
 are useful in Logfire rather than opaque numbers.
 
-For routine online traffic, model-call evaluators remain sampled at `0.2`, in line with the
-repository contract; free structural checks run on every call. A local-only "full demo
-evaluations" checkbox may tag explicitly demonstrated requests so their model-call evaluators
-run at `1.0`. The sampling callback will use agent-run metadata to distinguish that deliberate
-demo traffic from normal traffic. Experiments always run the complete evaluator set.
+Because this is a local demonstration environment, every online evaluator runs on every agent
+turn. The capability dispatches the evaluators in the background after the agent returns, so
+the chat response does not wait for the four model judges to finish. Experiments also run the
+complete evaluator set.
 
 Tests disable online evaluation globally, as required by the repository, and exercise all
 evaluator parsing and span inspection with synthetic contexts or test models.

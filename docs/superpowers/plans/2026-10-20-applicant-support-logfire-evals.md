@@ -19,7 +19,7 @@
 - The exact Logfire project is `duncan/applicant-support`; the hosted dataset name is `applicant_support_baseline`.
 - Managed variable names are `applicant_support_prompt` and `applicant_support_model`.
 - Normal chat does not accept a caller-supplied model or prompt. A new session resolves them once and subsequent turns keep that configuration.
-- Routine online LLM evaluators sample at `0.2`; free evaluators run on every call. Explicit local demo traffic may force all evaluators through agent-run metadata.
+- This local demo runs every online evaluator on every agent call; the capability dispatches them in the background after the response is available.
 - Experiments run the full shared evaluator set against hosted cases and use a fresh seeded SQLite database for every case.
 - Tests use `TestModel` or `FunctionModel`, disable online evaluation, send no telemetry, access no hosted dataset, and make no real Gateway calls.
 - Real model smoke experiments use only two or three cases. Do not run a full billed comparison without showing the candidate/case count and getting explicit user confirmation.
@@ -93,12 +93,12 @@
 - Produces: `run_applicant_turn(agent, *, question, deps, config, history=(), metadata=None) -> AgentRunResult[str]`, passing `model`, `instructions`, history, and metadata explicitly.
 - Changes: the session record stores `application_id`, messages, and one `ResolvedAgentConfig` instead of a tuple.
 - Produces: `DELETE /api/session` to start a new local conversation.
-- Changes: `POST /api/chat` accepts `application_id`, `message`, and `full_demo_evals: bool = False`; it no longer accepts `model_choice`.
+- Changes: `POST /api/chat` accepts `application_id` and `message`; it no longer accepts `model_choice` or an online-evaluation sampling override.
 - Changes: `ChatResponse` includes `reply`, `model_name`, and `prompt_fingerprint`.
 
 - [ ] **Step 1: Add failing agent-service tests**
 
-  Test with `FunctionModel` that `run_applicant_turn()` supplies the configured instructions and model, forwards prior messages, and adds application ID, resolved model, prompt fingerprint, session ID, and `force_online_evals` to run metadata without storing the prompt text there.
+  Test with `FunctionModel` that `run_applicant_turn()` supplies the configured instructions and model, forwards prior messages, and adds application ID, resolved model, prompt fingerprint, and session ID to run metadata without storing the prompt text there.
 
 - [ ] **Step 2: Run the service tests to verify RED**
 
@@ -151,8 +151,7 @@
   experiment output shared with hosted expected outputs.
 - Produces: `SHARED_EVALUATORS`, containing the exact instances used by experiments.
 - Produces: helpers that normalize live string outputs and experiment output objects, extract distinct tool names, and extract tool-return evidence from a `span_tree`.
-- Produces: `APPLICANT_SUPPORT_ONLINE_EVALUATION`, wrapping `ReplyPresent` directly and each model-call evaluator in `OnlineEvaluator`.
-- Produces: `_online_sample_rate(ctx: SamplingContext) -> float`, returning `1.0` only when metadata contains `force_online_evals=True`, otherwise `0.2`.
+- Produces: `APPLICANT_SUPPORT_ONLINE_EVALUATION`, wrapping every shared evaluator in an `OnlineEvaluator` with `sample_rate=1.0`.
 
 - [ ] **Step 1: Add failing evaluator tests**
 
@@ -170,7 +169,7 @@
 
 - [ ] **Step 4: Add failing online-capability tests**
 
-  Assert that the online capability wraps the exact shared instances, normal traffic samples model-call judges at `0.2`, tagged demo traffic samples at `1.0`, and `pydantic_evals.online.configure(enabled=False)` in `conftest.py` prevents background real-model activity during endpoint tests.
+  Assert that the online capability wraps the exact shared instances, selects every evaluator for every live call, and `pydantic_evals.online.configure(enabled=False)` in `conftest.py` prevents background real-model activity during endpoint tests.
 
 - [ ] **Step 5: Run online tests to verify RED**
 
@@ -305,7 +304,7 @@
 - Produces: in-memory `ExperimentJob` records with `queued|running|completed|failed`, timestamps, kind, scope, candidate/case counts, summaries, and safe error text.
 - Produces: `POST /api/experiments/{kind}/smoke`, `POST /api/experiments/{kind}/full`, and `GET /api/experiments/jobs/{job_id}`.
 - Requires: a successful smoke job ID of the same kind before accepting a full launch request.
-- Changes: the chat UI shows resolved model and prompt fingerprint, a New session action, a local-only Full demo evaluations checkbox, and model/prompt experiment controls with job status and Logfire links.
+- Changes: the chat UI shows resolved model and prompt fingerprint, a New session action, an always-on online-evaluation status, and model/prompt experiment controls with job status and Logfire links.
 
 - [ ] **Step 1: Add failing job-registry tests**
 
@@ -323,7 +322,7 @@
 
 - [ ] **Step 4: Add failing API and rendered-UI tests**
 
-  Assert smoke endpoints enqueue the correct comparison, full endpoints reject missing/failed/mismatched smoke IDs, job status is serializable, chat requests carry `full_demo_evals`, session reset works, the old model selector is absent, and the new configuration/experiment controls are present.
+  Assert smoke endpoints enqueue the correct comparison, full endpoints reject missing/failed/mismatched smoke IDs, job status is serializable, session reset works, the old model selector is absent, and the new configuration/experiment controls are present.
 
 - [ ] **Step 5: Run endpoint/UI tests to verify RED**
 

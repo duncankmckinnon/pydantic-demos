@@ -27,7 +27,7 @@ from applicant_support.evals.hosted import (
     create_dataset_client,
     load_hosted_dataset,
 )
-from applicant_support.evals.online import applicant_support_online_evaluation
+from applicant_support.evals.online import APPLICANT_SUPPORT_ONLINE_EVALUATION
 from applicant_support.jobs import ExperimentJob, ExperimentJobRegistry, ExperimentScope
 from applicant_support.service import run_applicant_turn
 from demo_core.logfire_setup import configure_logfire
@@ -71,7 +71,6 @@ class ChatRequest(BaseModel):
 
     application_id: str = Field(pattern=r"^APP-\d{4}$")
     message: str = Field(min_length=1, max_length=2_000)
-    full_demo_evals: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -170,7 +169,7 @@ def create_applicant_support_app(
     gateway_settings = GatewaySettings()
     agent = build_agent(
         gateway_settings,
-        capabilities=[applicant_support_online_evaluation],
+        capabilities=[APPLICANT_SUPPORT_ONLINE_EVALUATION],
     )
     app = create_app(title="Applicant Support Demo")
 
@@ -217,7 +216,6 @@ def create_applicant_support_app(
             history=history,
             metadata={
                 "session_id": session_id,
-                "force_online_evals": payload.full_demo_evals,
             },
             model=model,
         )

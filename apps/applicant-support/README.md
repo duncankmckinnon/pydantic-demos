@@ -96,17 +96,16 @@ rubrics cannot drift.
 
 ## Online evaluations
 
-Every live agent call runs the free `ReplyPresent` check. The shared model judges evaluate:
+Every live agent call runs all five online evaluations. The shared model judges evaluate:
 
 - tool-use appropriateness;
 - grounded correctness against actual tool returns;
 - professionalism;
 - frustration handling.
 
-Model judges normally sample at 20%. Enable **Full demo evaluations** for a deliberate
-walkthrough turn to run all judges and then inspect their `gen_ai.evaluation.result` events
-in Live Evaluations and their trends in the Agents view. Unit tests disable online evaluation
-globally and never make a Gateway call.
+The evaluation capability dispatches the judges in the background after the agent returns,
+then records their `gen_ai.evaluation.result` events in Live Evaluations and their trends in
+the Agents view. Unit tests disable online evaluation globally and never make a Gateway call.
 
 ## Model and prompt experiments
 
@@ -143,8 +142,7 @@ telemetry remains in Logfire.
 
 ## Demo walkthrough
 
-1. Start a new UI session, enable Full demo evaluations, and ask a status question plus one
-   frustrated follow-up.
+1. Start a new UI session and ask a status question plus one frustrated follow-up.
 2. In Logfire, inspect the agent trace, tool spans, resolved model/fingerprint metadata, and
    evaluation events for each turn.
 3. Capture a useful run into `applicant_support_baseline` using the Live View flow above.

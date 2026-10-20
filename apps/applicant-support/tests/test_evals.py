@@ -1,5 +1,8 @@
+from dataclasses import replace
+
 from pydantic_evals import Case
-from pydantic_evals.online import DEFAULT_CONFIG, OnlineEvaluator, SamplingContext
+from pydantic_evals import _online as online_internal
+from pydantic_evals.online import DEFAULT_CONFIG, OnlineEvaluator
 
 from applicant_support.evals.dataset import (
     DATASET_NAME,
@@ -7,12 +10,9 @@ from applicant_support.evals.dataset import (
     ApplicantSupportEvalInput,
     build_seed_dataset,
 )
-from applicant_support.evals.evaluators import ReplyPresent, SHARED_EVALUATORS
+from applicant_support.evals.evaluators import SHARED_EVALUATORS
 from applicant_support.evals.models import ApplicantSupportEvalOutput
-from applicant_support.evals.online import (
-    APPLICANT_SUPPORT_ONLINE_EVALUATION,
-    _online_sample_rate,
-)
+from applicant_support.evals.online import APPLICANT_SUPPORT_ONLINE_EVALUATION
 
 
 def test_dataset_covers_initial_applicant_support_scenarios() -> None:
@@ -102,27 +102,19 @@ def test_online_evaluation_reuses_shared_evaluator_instances() -> None:
     ]
 
     assert unwrapped == SHARED_EVALUATORS
-    assert isinstance(entries[0], ReplyPresent)
-    assert all(isinstance(entry, OnlineEvaluator) for entry in entries[1:])
-    assert all(entry.sample_rate is _online_sample_rate for entry in entries[1:])
+    assert all(isinstance(entry, OnlineEvaluator) for entry in entries)
+    assert all(entry.sample_rate == 1.0 for entry in entries)
 
 
-def test_online_judge_sampling_can_be_forced_for_tagged_demo_traffic() -> None:
-    routine = SamplingContext(
-        evaluator=SHARED_EVALUATORS[1],
-        inputs="status?",
-        metadata={"force_online_evals": False},
-        call_seed=0.5,
-    )
-    demo = SamplingContext(
-        evaluator=SHARED_EVALUATORS[1],
-        inputs="status?",
-        metadata={"force_online_evals": True},
-        call_seed=0.5,
+def test_every_online_evaluator_is_selected_for_every_run(monkeypatch) -> None:
+    monkeypatch.setattr(online_internal.random, "random", lambda: 0.999999)
+    sampled = online_internal.sample_evaluators(
+        APPLICANT_SUPPORT_ONLINE_EVALUATION._online_evaluators,
+        replace(DEFAULT_CONFIG, enabled=True),
+        "What is my status?",
     )
 
-    assert _online_sample_rate(routine) == 0.2
-    assert _online_sample_rate(demo) == 1.0
+    assert [entry.evaluator for entry in sampled] == SHARED_EVALUATORS
 
 
 def test_test_suite_disables_online_evaluation_globally() -> None:
