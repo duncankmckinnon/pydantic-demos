@@ -1,16 +1,19 @@
 import os
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, Request, Response
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models import Model
 
 from applicant_support.agent import AgentDeps, MODEL_CHOICES, build_agent
+from applicant_support.config import ResolvedAgentConfig, resolve_agent_config
 from applicant_support.db import ApplicantDatabase
+from applicant_support.service import run_applicant_turn
 from demo_core.logfire_setup import configure_logfire
 from demo_core.models import get_model
 from demo_core.settings import GatewaySettings, LogfireSettings
@@ -19,21 +22,31 @@ from demo_core.web import create_app
 _TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 _DEFAULT_DATABASE_PATH = Path(__file__).resolve().parents[2] / "data" / "applicants.sqlite3"
 
-# Local-demo-only process memory. Each session stores the application ID alongside its
-# messages so changing IDs cannot feed one applicant's history into another applicant's run.
-_SESSIONS: dict[str, tuple[str, list[ModelMessage]]] = {}
+@dataclass
+class SessionRecord:
+    application_id: str
+    messages: list[ModelMessage]
+    config: ResolvedAgentConfig
+
+
+# Local-demo-only process memory. The resolved configuration remains fixed for a session,
+# while changing application IDs starts a clean message history.
+_SESSIONS: dict[str, SessionRecord] = {}
 _MODEL_CACHE: dict[str, Model] = {}
-_VALID_MODEL_CHOICES = {f"{api_format}:{model_name}" for api_format, model_name in MODEL_CHOICES}
 
 
 class ChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     application_id: str = Field(pattern=r"^APP-\d{4}$")
     message: str = Field(min_length=1, max_length=2_000)
-    model_choice: str
+    full_demo_evals: bool = False
 
 
 class ChatResponse(BaseModel):
     reply: str
+    model_name: str
+    prompt_fingerprint: str
 
 
 def _resolve_session_id(request: Request) -> str:
@@ -87,37 +100,57 @@ def create_applicant_support_app(
     async def post_chat(
         payload: ChatRequest, request: Request, response: Response
     ) -> ChatResponse:
-        if payload.model_choice not in _VALID_MODEL_CHOICES:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unknown model_choice: {payload.model_choice!r}",
-            )
-
         session_id = _resolve_session_id(request)
         stored_session = _SESSIONS.get(session_id)
-        history = (
-            stored_session[1]
-            if stored_session is not None and stored_session[0] == payload.application_id
-            else []
+        if stored_session is None:
+            config = resolve_agent_config()
+            history: list[ModelMessage] = []
+        else:
+            config = stored_session.config
+            history = (
+                stored_session.messages
+                if stored_session.application_id == payload.application_id
+                else []
+            )
+
+        model_choice = ":".join(config.model.model_choice)
+        if model_choice not in _MODEL_CACHE:
+            _MODEL_CACHE[model_choice] = get_model(
+                *config.model.model_choice, gateway_settings
+            )
+        model = _MODEL_CACHE[model_choice]
+
+        result = await run_applicant_turn(
+            agent,
+            question=payload.message,
+            deps=AgentDeps(database=database, application_id=payload.application_id),
+            config=config,
+            history=history,
+            metadata={
+                "session_id": session_id,
+                "force_online_evals": payload.full_demo_evals,
+            },
+            model=model,
         )
 
-        if payload.model_choice not in _MODEL_CACHE:
-            api_format, model_name = payload.model_choice.split(":", 1)
-            _MODEL_CACHE[payload.model_choice] = get_model(
-                api_format, model_name, gateway_settings
-            )
-        model = _MODEL_CACHE[payload.model_choice]
-
-        with agent.override(model=model):
-            result = await agent.run(
-                payload.message,
-                deps=AgentDeps(database=database, application_id=payload.application_id),
-                message_history=history,
-            )
-
-        _SESSIONS[session_id] = (payload.application_id, result.all_messages())
+        _SESSIONS[session_id] = SessionRecord(
+            application_id=payload.application_id,
+            messages=result.all_messages(),
+            config=config,
+        )
         response.set_cookie("session_id", session_id, httponly=True, samesite="lax")
-        return ChatResponse(reply=str(result.output))
+        return ChatResponse(
+            reply=str(result.output),
+            model_name=model_choice,
+            prompt_fingerprint=config.prompt_fingerprint,
+        )
+
+    @app.delete("/api/session", status_code=204)
+    async def delete_session(request: Request, response: Response) -> None:
+        session_id = request.cookies.get("session_id")
+        if session_id is not None:
+            _SESSIONS.pop(session_id, None)
+        response.delete_cookie("session_id", httponly=True, samesite="lax")
 
     return app
 
