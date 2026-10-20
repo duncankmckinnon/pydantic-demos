@@ -35,7 +35,7 @@ def test_registry_enforces_legal_transitions_and_unknown_jobs() -> None:
         registry.get("missing-job")
 
 
-async def test_registry_captures_failures_without_secrets_or_prompts() -> None:
+async def test_registry_captures_failures_without_secrets_or_prompts(caplog) -> None:
     registry = ExperimentJobRegistry()
 
     async def fail():
@@ -51,6 +51,10 @@ async def test_registry_captures_failures_without_secrets_or_prompts() -> None:
     assert failed.error == "RuntimeError: experiment failed; check local logs"
     assert "pylf" not in failed.error
     assert "managed prompt" not in failed.error
+    assert job.id in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "pylf_v1_us_super-secret" not in caplog.text
+    assert "complete managed prompt body" not in caplog.text
 
 
 async def test_reset_cancels_and_removes_process_local_jobs() -> None:

@@ -37,10 +37,23 @@ def create_dataset_client() -> LogfireAPIClient:
 
 
 def sync_seed_dataset(client: Any) -> DatasetDetail:
+    seed = build_seed_dataset()
+    hosted_seed = Dataset[
+        ApplicantSupportEvalInput,
+        ApplicantSupportEvalOutput,
+        ApplicantSupportCaseMetadata,
+    ](
+        name=seed.name,
+        cases=list(seed.cases),
+        # Evaluators are code, not dataset content. Keeping them out of the
+        # hosted payload makes the dataset editable in Logfire and avoids
+        # trying to serialize model clients and their internal locks.
+        evaluators=[],
+    )
     return cast(
         DatasetDetail,
         client.push_dataset(
-            build_seed_dataset(),
+            hosted_seed,
             name=DATASET_NAME,
             on_case_conflict="update",
         ),

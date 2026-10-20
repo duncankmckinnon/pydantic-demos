@@ -1,6 +1,7 @@
+import asyncio
 import os
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
@@ -15,11 +16,17 @@ from applicant_support.config import ResolvedAgentConfig, resolve_agent_config
 from applicant_support.db import ApplicantDatabase
 from applicant_support.evals.experiments import (
     ExperimentKind,
+    ExperimentRequest,
     ExperimentRunSummary,
+    build_experiment_request,
     run_full_comparison,
     run_smoke_comparison,
 )
-from applicant_support.evals.hosted import create_dataset_client, load_hosted_dataset
+from applicant_support.evals.hosted import (
+    HostedDataset,
+    create_dataset_client,
+    load_hosted_dataset,
+)
 from applicant_support.evals.online import applicant_support_online_evaluation
 from applicant_support.jobs import ExperimentJob, ExperimentJobRegistry, ExperimentScope
 from applicant_support.service import run_applicant_turn
@@ -45,6 +52,18 @@ class SessionRecord:
 _SESSIONS: dict[str, SessionRecord] = {}
 _MODEL_CACHE: dict[str, Model] = {}
 _JOB_REGISTRY = ExperimentJobRegistry()
+_MODEL_JUDGE_COUNT = 4
+
+
+@dataclass
+class ExperimentJobContext:
+    request: ExperimentRequest
+    dataset: HostedDataset | None = None
+    confirmation_token: str = field(default_factory=lambda: uuid4().hex)
+    full_launched: bool = False
+
+
+_EXPERIMENT_CONTEXTS: dict[str, ExperimentJobContext] = {}
 
 
 class ChatRequest(BaseModel):
@@ -65,28 +84,54 @@ class FullExperimentRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     smoke_job_id: str
+    confirmation_token: str
+
+
+class ExperimentCandidatePreview(BaseModel):
+    label: str
+    model_name: str
+    prompt_fingerprint: str
+
+
+class FullExperimentPreview(BaseModel):
+    kind: ExperimentKind
+    smoke_job_id: str
+    confirmation_token: str
+    candidate_count: int
+    case_count: int
+    judge_count: int
+    estimated_model_calls: int
+    candidates: list[ExperimentCandidatePreview]
+
+
+def _fetch_hosted_dataset() -> HostedDataset:
+    with create_dataset_client() as client:
+        return load_hosted_dataset(client)
 
 
 async def _run_experiment_job(
-    kind: ExperimentKind,
+    context: ExperimentJobContext,
     scope: ExperimentScope,
     gateway_settings: GatewaySettings,
 ) -> list[ExperimentRunSummary]:
-    with create_dataset_client() as client:
-        dataset = load_hosted_dataset(client)
-    control = resolve_agent_config()
+    if context.dataset is None:
+        context.dataset = await asyncio.to_thread(_fetch_hosted_dataset)
+
+    dataset = context.dataset
+    assert dataset is not None
+    kind = context.request.kind
     if scope == "smoke":
         return await run_smoke_comparison(
             kind,
             dataset=dataset,
             gateway_settings=gateway_settings,
-            control=control,
+            request=context.request,
         )
     return await run_full_comparison(
         kind,
         dataset=dataset,
         gateway_settings=gateway_settings,
-        control=control,
+        request=context.request,
     )
 
 
@@ -197,34 +242,23 @@ def create_applicant_support_app(
         response.delete_cookie("session_id", httponly=True, samesite="lax")
 
     def launch_experiment(
-        kind: ExperimentKind,
+        context: ExperimentJobContext,
         scope: ExperimentScope,
     ) -> ExperimentJob:
-        return _JOB_REGISTRY.launch(
-            kind=kind,
+        job = _JOB_REGISTRY.launch(
+            kind=context.request.kind,
             scope=scope,
-            runner=lambda: _run_experiment_job(kind, scope, gateway_settings),
+            runner=lambda: _run_experiment_job(context, scope, gateway_settings),
         )
+        _EXPERIMENT_CONTEXTS[job.id] = context
+        return job
 
-    @app.post(
-        "/api/experiments/{kind}/smoke",
-        response_model=ExperimentJob,
-        status_code=202,
-    )
-    async def post_smoke_experiment(kind: ExperimentKind) -> ExperimentJob:
-        return launch_experiment(kind, "smoke")
-
-    @app.post(
-        "/api/experiments/{kind}/full",
-        response_model=ExperimentJob,
-        status_code=202,
-    )
-    async def post_full_experiment(
+    def qualified_smoke_context(
         kind: ExperimentKind,
-        payload: FullExperimentRequest,
-    ) -> ExperimentJob:
+        smoke_job_id: str,
+    ) -> ExperimentJobContext:
         try:
-            smoke = _JOB_REGISTRY.get(payload.smoke_job_id)
+            smoke = _JOB_REGISTRY.get(smoke_job_id)
         except KeyError:
             raise HTTPException(status_code=404, detail="Smoke job not found") from None
         if (
@@ -236,7 +270,101 @@ def create_applicant_support_app(
                 status_code=409,
                 detail="A completed smoke job of the same comparison kind is required",
             )
-        return launch_experiment(kind, "full")
+
+        context = _EXPERIMENT_CONTEXTS.get(smoke_job_id)
+        if context is None or context.dataset is None:
+            raise HTTPException(
+                status_code=409,
+                detail="The smoke job no longer has a prepared experiment context",
+            )
+
+        expected = [
+            (
+                candidate.label,
+                ":".join(candidate.model.model_choice),
+                candidate.prompt_fingerprint,
+            )
+            for candidate in context.request.candidates
+        ]
+        actual = [
+            (
+                summary.candidate,
+                summary.model_name,
+                summary.prompt_fingerprint,
+            )
+            for summary in smoke.summaries
+        ]
+        if actual != expected:
+            raise HTTPException(
+                status_code=409,
+                detail="The prepared candidate configuration no longer matches the smoke run",
+            )
+        return context
+
+    @app.post(
+        "/api/experiments/{kind}/smoke",
+        response_model=ExperimentJob,
+        status_code=202,
+    )
+    async def post_smoke_experiment(kind: ExperimentKind) -> ExperimentJob:
+        context = ExperimentJobContext(
+            request=build_experiment_request(kind, control=resolve_agent_config())
+        )
+        return launch_experiment(context, "smoke")
+
+    @app.get(
+        "/api/experiments/{kind}/full-preview/{smoke_job_id}",
+        response_model=FullExperimentPreview,
+    )
+    async def get_full_experiment_preview(
+        kind: ExperimentKind,
+        smoke_job_id: str,
+    ) -> FullExperimentPreview:
+        context = qualified_smoke_context(kind, smoke_job_id)
+        candidates = [
+            ExperimentCandidatePreview(
+                label=candidate.label,
+                model_name=":".join(candidate.model.model_choice),
+                prompt_fingerprint=candidate.prompt_fingerprint,
+            )
+            for candidate in context.request.candidates
+        ]
+        case_count = len(context.dataset.cases)
+        return FullExperimentPreview(
+            kind=kind,
+            smoke_job_id=smoke_job_id,
+            confirmation_token=context.confirmation_token,
+            candidate_count=len(candidates),
+            case_count=case_count,
+            judge_count=_MODEL_JUDGE_COUNT,
+            estimated_model_calls=(
+                len(candidates) * case_count * (1 + _MODEL_JUDGE_COUNT)
+            ),
+            candidates=candidates,
+        )
+
+    @app.post(
+        "/api/experiments/{kind}/full",
+        response_model=ExperimentJob,
+        status_code=202,
+    )
+    async def post_full_experiment(
+        kind: ExperimentKind,
+        payload: FullExperimentRequest,
+    ) -> ExperimentJob:
+        context = qualified_smoke_context(kind, payload.smoke_job_id)
+        if payload.confirmation_token != context.confirmation_token:
+            raise HTTPException(
+                status_code=409,
+                detail="The full-run confirmation does not match the prepared scope",
+            )
+        if context.full_launched:
+            raise HTTPException(
+                status_code=409,
+                detail="A full run has already been launched for this smoke job",
+            )
+        context.full_launched = True
+        return launch_experiment(context, "full")
 
     @app.get(
         "/api/experiments/jobs/{job_id}",

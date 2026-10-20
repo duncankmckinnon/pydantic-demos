@@ -232,8 +232,32 @@
       }
 
       async function launchExperiment(kind, scope) {
-        const payload = scope === "full" ? { smoke_job_id: smokeJobs[kind] } : undefined;
-        if (scope === "full" && !window.confirm("Run the full billed comparison now?")) return;
+        let payload;
+        if (scope === "full") {
+          const previewResponse = await fetch(
+            `/api/experiments/${kind}/full-preview/${smokeJobs[kind]}`
+          );
+          const preview = await previewResponse.json();
+          if (!previewResponse.ok) {
+            throw new Error(preview.detail || "Could not prepare the full comparison");
+          }
+          const candidates = preview.candidates
+            .map((candidate) =>
+              `${candidate.label}: ${candidate.model_name} · prompt ${candidate.prompt_fingerprint}`
+            )
+            .join("\n");
+          const confirmed = window.confirm(
+            `Run this bound full comparison?\n\n` +
+            `${preview.candidate_count} candidates × ${preview.case_count} hosted cases\n` +
+            `${preview.judge_count} LLM judges per case\n` +
+            `Estimated model calls: ${preview.estimated_model_calls}\n\n${candidates}`
+          );
+          if (!confirmed) return;
+          payload = {
+            smoke_job_id: smokeJobs[kind],
+            confirmation_token: preview.confirmation_token,
+          };
+        }
         experimentStatus.textContent = `Queuing ${kind} ${scope} comparison…`;
         const response = await fetch(`/api/experiments/${kind}/${scope}`, {
           method: "POST",

@@ -67,7 +67,11 @@ def build_seed_dataset() -> Dataset[
     ApplicantSupportEvalOutput,
     ApplicantSupportCaseMetadata,
 ]:
-    return Dataset(
+    return Dataset[
+        ApplicantSupportEvalInput,
+        ApplicantSupportEvalOutput,
+        ApplicantSupportCaseMetadata,
+    ](
         name=DATASET_NAME,
         cases=[
             _case(

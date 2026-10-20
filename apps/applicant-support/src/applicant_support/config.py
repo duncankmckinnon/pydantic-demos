@@ -72,12 +72,24 @@ def _resolved_value(value: Any) -> Any:
     return getattr(value, "value", value)
 
 
+def _resolution_source(value: Any) -> str:
+    reason = getattr(value, "reason", None)
+    if reason in (None, "resolved"):
+        return "managed"
+    if reason == "context_override":
+        return "context_override"
+    if reason == "code_default":
+        return "default_code"
+    return f"default_{reason}"
+
+
 def _resolve_prompt() -> tuple[str, str]:
     try:
         with PROMPT_VARIABLE.get() as resolved:
             prompt = _resolved_value(resolved)
+            source = _resolution_source(resolved)
         if isinstance(prompt, str) and prompt.strip():
-            return prompt, "managed"
+            return prompt, source
     except Exception:
         pass
     return DEFAULT_PROMPT, "default_resolution_error"
@@ -87,12 +99,13 @@ def _resolve_model() -> tuple[AgentConfig, str]:
     try:
         with MODEL_VARIABLE.get() as resolved:
             model = AgentConfig.model_validate(_resolved_value(resolved))
+            source = _resolution_source(resolved)
     except Exception:
         return DEFAULT_MODEL, "default_resolution_error"
 
     if model.model_choice not in ALLOWED_MODELS:
         return DEFAULT_MODEL, "default_invalid_managed_value"
-    return model, "managed"
+    return model, source
 
 
 def resolve_agent_config() -> ResolvedAgentConfig:

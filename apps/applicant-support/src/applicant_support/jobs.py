@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Literal
@@ -15,6 +16,7 @@ from applicant_support.evals.experiments import (
 
 JobStatus = Literal["queued", "running", "completed", "failed"]
 ExperimentScope = Literal["smoke", "full"]
+logger = logging.getLogger(__name__)
 
 
 def _now() -> datetime:
@@ -113,6 +115,11 @@ class ExperimentJobRegistry:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                logger.error(
+                    "Experiment job %s failed (%s)",
+                    job.id,
+                    type(exc).__name__,
+                )
                 self.fail(job.id, exc)
 
         self._tasks[job.id] = asyncio.create_task(

@@ -126,7 +126,10 @@ The currently managed value is included as the control and experiments never mut
 variables.
 
 The UI unlocks a full launch only after a completed smoke job of the same comparison kind.
-The CLI likewise requires `--full` explicitly:
+Before confirmation it shows the exact smoke-tested candidate labels, models, prompt
+fingerprints, hosted case count, judge count, and estimated model-call total. The full job is
+bound to that same candidate configuration and in-memory dataset snapshot. The CLI likewise
+requires `--full` explicitly:
 
 ```bash
 uv run --package applicant-support python -m applicant_support.evals.run --kind model --full

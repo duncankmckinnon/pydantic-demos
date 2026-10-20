@@ -4,6 +4,7 @@ import hashlib
 import re
 import tempfile
 from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -95,6 +96,32 @@ class ExperimentRunSummary(BaseModel):
     prompt_fingerprint: str
 
 
+class ExperimentExecutionError(RuntimeError):
+    """Raised when an experiment did not produce a complete, trustworthy report."""
+
+
+def _validate_report(report: Any, *, expected_cases: int) -> None:
+    task_failures = len(report.failures)
+    if task_failures:
+        raise ExperimentExecutionError(
+            f"Experiment report contained {task_failures} task failure(s)."
+        )
+
+    evaluator_failures = sum(
+        len(case.evaluator_failures) for case in report.cases
+    ) + len(report.report_evaluator_failures)
+    if evaluator_failures:
+        raise ExperimentExecutionError(
+            f"Experiment report contained {evaluator_failures} evaluator failure(s)."
+        )
+
+    if len(report.cases) != expected_cases:
+        raise ExperimentExecutionError(
+            "Experiment report was incomplete: "
+            f"expected {expected_cases} cases and received {len(report.cases)}."
+        )
+
+
 def build_experiment_request(
     kind: ExperimentKind,
     *,
@@ -173,6 +200,10 @@ async def run_comparison(
     ],
     gateway_settings: GatewaySettings,
 ) -> list[ExperimentRunSummary]:
+    if not dataset.cases:
+        raise ExperimentExecutionError("Experiment dataset has no cases.")
+
+    dataset_snapshot_at = datetime.now(timezone.utc).isoformat()
     summaries: list[ExperimentRunSummary] = []
     for candidate in request.candidates:
         config = candidate.resolved_config()
@@ -190,9 +221,10 @@ async def run_comparison(
             "model": ":".join(candidate.model.model_choice),
             "prompt_fingerprint": candidate.prompt_fingerprint,
             "dataset": dataset.name,
+            "dataset_snapshot_at": dataset_snapshot_at,
             "judge_model": ":".join(JUDGE_MODEL),
         }
-        await dataset.evaluate(
+        report = await dataset.evaluate(
             _build_case_task(agent=agent, candidate=candidate, model=model),
             name=experiment_name,
             task_name=task_name,
@@ -200,6 +232,7 @@ async def run_comparison(
             max_concurrency=1,
             progress=False,
         )
+        _validate_report(report, expected_cases=len(dataset.cases))
         summaries.append(
             ExperimentRunSummary(
                 kind=request.kind,
@@ -240,8 +273,11 @@ async def run_smoke_comparison(
     dataset: Dataset,
     gateway_settings: GatewaySettings,
     control: ResolvedAgentConfig | None = None,
+    request: ExperimentRequest | None = None,
 ) -> list[ExperimentRunSummary]:
-    request = build_experiment_request(kind, control=control)
+    request = request or build_experiment_request(kind, control=control)
+    if request.kind != kind:
+        raise ValueError("Experiment request kind does not match the smoke run kind.")
     return await run_comparison(
         request,
         dataset=_smoke_dataset(dataset),
@@ -255,8 +291,11 @@ async def run_full_comparison(
     dataset: Dataset,
     gateway_settings: GatewaySettings,
     control: ResolvedAgentConfig | None = None,
+    request: ExperimentRequest | None = None,
 ) -> list[ExperimentRunSummary]:
-    request = build_experiment_request(kind, control=control)
+    request = request or build_experiment_request(kind, control=control)
+    if request.kind != kind:
+        raise ValueError("Experiment request kind does not match the full run kind.")
     return await run_comparison(
         request,
         dataset=dataset,

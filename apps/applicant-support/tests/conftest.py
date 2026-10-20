@@ -25,3 +25,4 @@ def _clear_app_state() -> None:
     applicant_support.main._MODEL_CACHE.clear()
     applicant_support.main._SESSIONS.clear()
     applicant_support.main._JOB_REGISTRY.reset()
+    applicant_support.main._EXPERIMENT_CONTEXTS.clear()

@@ -1,10 +1,15 @@
 from types import SimpleNamespace
 
+import pytest
+from pydantic_evals import Dataset
+from pydantic_evals.evaluators import Evaluator, EvaluatorContext
+
 from applicant_support.config import AgentConfig
 from applicant_support.evals.dataset import build_seed_dataset
 from applicant_support.evals.evaluators import JUDGE_MODEL, SHARED_EVALUATORS
 from applicant_support.evals.experiments import (
     ExperimentCandidate,
+    ExperimentExecutionError,
     ExperimentRequest,
     _build_case_task,
     run_comparison,
@@ -24,7 +29,16 @@ class FakeDataset:
     async def evaluate(self, task, **kwargs):
         outputs = [await task(case.inputs) for case in self.cases]
         self.calls.append({"kwargs": kwargs, "outputs": outputs})
-        return SimpleNamespace()
+        return SimpleNamespace(
+            cases=[SimpleNamespace(evaluator_failures=[]) for _ in outputs],
+            failures=[],
+            report_evaluator_failures=[],
+        )
+
+
+class BrokenEvaluator(Evaluator):
+    def evaluate(self, ctx: EvaluatorContext):
+        raise RuntimeError("judge unavailable")
 
 
 async def test_comparisons_hold_one_dimension_and_emit_complete_metadata(
@@ -132,6 +146,7 @@ async def test_comparisons_hold_one_dimension_and_emit_complete_metadata(
             assert metadata["model"]
             assert metadata["prompt_fingerprint"]
             assert metadata["dataset"] == "applicant_support_baseline"
+            assert metadata["dataset_snapshot_at"].endswith("+00:00")
             assert metadata["judge_model"] == ":".join(JUDGE_MODEL)
 
 
@@ -170,3 +185,95 @@ async def test_case_task_uses_fresh_seeded_database_every_time(monkeypatch) -> N
     ]
     assert paths[0] != paths[1]
     assert all(path.name != "evals.sqlite3" for path in paths)
+
+
+async def test_comparison_rejects_task_and_evaluator_failures(monkeypatch) -> None:
+    import applicant_support.evals.experiments as experiments
+
+    monkeypatch.setattr(
+        experiments, "build_agent", lambda settings, *, capabilities=(): object()
+    )
+    monkeypatch.setattr(experiments, "get_model", lambda *args: object())
+    request = ExperimentRequest(
+        kind="model",
+        comparison_group="failure-group",
+        candidates=[
+            ExperimentCandidate(
+                label="candidate-a",
+                prompt="Prompt A",
+                model=AgentConfig(
+                    api_format="openai-responses", model_name="gpt-5-mini"
+                ),
+            ),
+            ExperimentCandidate(
+                label="candidate-b",
+                prompt="Prompt A",
+                model=AgentConfig(
+                    api_format="anthropic", model_name="claude-haiku-5.5"
+                ),
+            ),
+        ],
+    )
+    case = build_seed_dataset().cases[0]
+    settings = GatewaySettings(api_key="pylf_v1_us_test-key")
+
+    async def broken_task(*args, **kwargs):
+        raise RuntimeError("task unavailable")
+
+    monkeypatch.setattr(experiments, "run_applicant_turn", broken_task)
+    task_failure_dataset = Dataset(
+        name="task-failure",
+        cases=[case],
+        evaluators=[],
+    )
+    with pytest.raises(ExperimentExecutionError, match="task failure"):
+        await run_comparison(
+            request,
+            dataset=task_failure_dataset,
+            gateway_settings=settings,
+        )
+
+    async def successful_task(*args, **kwargs):
+        return SimpleNamespace(output="A grounded response")
+
+    monkeypatch.setattr(experiments, "run_applicant_turn", successful_task)
+    evaluator_failure_dataset = Dataset(
+        name="evaluator-failure",
+        cases=[case],
+        evaluators=[BrokenEvaluator()],
+    )
+    with pytest.raises(ExperimentExecutionError, match="evaluator failure"):
+        await run_comparison(
+            request,
+            dataset=evaluator_failure_dataset,
+            gateway_settings=settings,
+        )
+
+
+async def test_comparison_rejects_empty_dataset() -> None:
+    request = ExperimentRequest(
+        kind="prompt",
+        candidates=[
+            ExperimentCandidate(
+                label="candidate-a",
+                prompt="Prompt A",
+                model=AgentConfig(
+                    api_format="openai-responses", model_name="gpt-5-mini"
+                ),
+            ),
+            ExperimentCandidate(
+                label="candidate-b",
+                prompt="Prompt B",
+                model=AgentConfig(
+                    api_format="openai-responses", model_name="gpt-5-mini"
+                ),
+            ),
+        ],
+    )
+
+    with pytest.raises(ExperimentExecutionError, match="no cases"):
+        await run_comparison(
+            request,
+            dataset=Dataset(name="empty", cases=[], evaluators=[]),
+            gateway_settings=GatewaySettings(api_key="pylf_v1_us_test-key"),
+        )

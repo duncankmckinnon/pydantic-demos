@@ -1,5 +1,12 @@
+import json
 from types import SimpleNamespace
 
+import httpx
+from logfire.experimental.api_client import (
+    LogfireAPIClient,
+    _get_dataset_type_args,
+    _serialize_evaluators,
+)
 from pydantic_evals import Case, Dataset
 
 from applicant_support.evals.dataset import (
@@ -67,6 +74,54 @@ def test_sync_updates_named_seed_cases_without_deleting_others() -> None:
     assert dataset.name == DATASET_NAME
     assert kwargs == {"name": DATASET_NAME, "on_case_conflict": "update"}
     assert {case.name for case in dataset.cases} >= {"lookup_tool_regression"}
+    assert list(dataset.evaluators) == []
+    assert all(not case.evaluators for case in dataset.cases)
+    assert _serialize_evaluators(dataset.evaluators) == []
+    assert _get_dataset_type_args(dataset) == (
+        ApplicantSupportEvalInput,
+        ApplicantSupportEvalOutput,
+        ApplicantSupportCaseMetadata,
+    )
+
+
+def test_seed_dataset_exposes_runtime_schema_types_to_logfire_sdk() -> None:
+    assert _get_dataset_type_args(build_seed_dataset()) == (
+        ApplicantSupportEvalInput,
+        ApplicantSupportEvalOutput,
+        ApplicantSupportCaseMetadata,
+    )
+
+
+def test_sync_serializes_schemas_and_cases_through_real_sdk_client() -> None:
+    requests: list[tuple[str, str, dict | None]] = []
+    dataset_id = "00000000-0000-0000-0000-000000000123"
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else None
+        requests.append((request.method, request.url.path, body))
+        if request.url.path.endswith("/import/"):
+            return httpx.Response(200, json=[])
+        return httpx.Response(200, json={"id": dataset_id, "name": DATASET_NAME})
+
+    transport = httpx.MockTransport(handle)
+    with httpx.Client(base_url="https://logfire.invalid", transport=transport) as http:
+        client = LogfireAPIClient(client=http)
+        detail = sync_seed_dataset(client)
+
+    assert str(detail["id"]) == dataset_id
+    create_payload = requests[0][2]
+    assert create_payload is not None
+    assert create_payload["evaluators"] == []
+    assert create_payload["report_evaluators"] == []
+    assert create_payload["input_schema"]["type"] == "object"
+    assert create_payload["output_schema"]["type"] == "object"
+    assert create_payload["metadata_schema"]["type"] == "object"
+    import_payload = next(
+        body for method, path, body in requests if path.endswith("/import/")
+    )
+    assert import_payload is not None
+    assert len(import_payload["cases"]) == len(build_seed_dataset().cases)
+    assert all(case["evaluators"] == [] for case in import_payload["cases"])
 
 
 def test_load_fetches_typed_hosted_cases_and_applies_code_evaluators() -> None:

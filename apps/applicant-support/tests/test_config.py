@@ -19,6 +19,12 @@ class FakeVariable:
         yield self.value
 
 
+class FakeResolution:
+    def __init__(self, value: Any, reason: str) -> None:
+        self.value = value
+        self.reason = reason
+
+
 def test_resolve_agent_config_uses_managed_values_and_safe_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -63,3 +69,25 @@ def test_resolve_agent_config_rejects_non_allowlisted_model(
 
     assert resolved.model == DEFAULT_MODEL
     assert resolved.model_source == "default_invalid_managed_value"
+
+
+def test_resolve_agent_config_labels_code_defaults_as_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import applicant_support.config as config_module
+
+    monkeypatch.setattr(
+        config_module,
+        "PROMPT_VARIABLE",
+        FakeVariable(FakeResolution("Default prompt", "code_default")),
+    )
+    monkeypatch.setattr(
+        config_module,
+        "MODEL_VARIABLE",
+        FakeVariable(FakeResolution(DEFAULT_MODEL, "no_provider")),
+    )
+
+    resolved = resolve_agent_config()
+
+    assert resolved.prompt_source == "default_code"
+    assert resolved.model_source == "default_no_provider"
