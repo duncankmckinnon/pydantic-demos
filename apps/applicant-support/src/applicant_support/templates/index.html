@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Applicant Support</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --navy: #17324d;
+        --blue: #246b9c;
+        --blue-dark: #1b557d;
+        --ink: #203040;
+        --muted: #677788;
+        --line: #d9e1e8;
+        --surface: #ffffff;
+        --background: #eef3f7;
+        --agent: #edf4f8;
+        --danger: #9c2f2f;
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--background);
+        color: var(--ink);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      header {
+        background: var(--navy);
+        color: white;
+        padding: 1rem max(1rem, calc((100vw - 980px) / 2));
+      }
+      header h1 { margin: 0; font-size: 1.2rem; }
+      header p { margin: 0.25rem 0 0; color: #cbd8e4; font-size: 0.9rem; }
+      main {
+        width: min(980px, calc(100% - 2rem));
+        margin: 1.5rem auto;
+        display: grid;
+        grid-template-columns: 240px minmax(0, 1fr);
+        gap: 1rem;
+      }
+      .panel {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        box-shadow: 0 8px 24px rgba(23, 50, 77, 0.06);
+      }
+      aside { padding: 1rem; align-self: start; }
+      label { display: block; font-size: 0.78rem; font-weight: 700; margin-bottom: 0.35rem; }
+      input, select, button { font: inherit; }
+      input, select {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 0.65rem 0.75rem;
+        background: white;
+        color: var(--ink);
+      }
+      .hint { color: var(--muted); font-size: 0.78rem; line-height: 1.5; }
+      .hint code { color: var(--navy); }
+      .model-field { margin-top: 1rem; }
+      .chat { min-height: 650px; display: flex; flex-direction: column; overflow: hidden; }
+      .chat-title { padding: 1rem 1.25rem; border-bottom: 1px solid var(--line); }
+      .chat-title h2 { margin: 0; font-size: 1rem; }
+      .quick-prompts { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem; }
+      .prompt {
+        border: 1px solid #b9cedd;
+        background: white;
+        color: var(--blue-dark);
+        border-radius: 999px;
+        padding: 0.4rem 0.65rem;
+        cursor: pointer;
+        font-size: 0.78rem;
+      }
+      #transcript {
+        flex: 1;
+        padding: 1.25rem;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 0.65rem;
+      }
+      .message { max-width: 78%; padding: 0.7rem 0.85rem; border-radius: 12px; white-space: pre-wrap; line-height: 1.4; }
+      .message.user { align-self: flex-end; background: var(--blue); color: white; }
+      .message.agent { align-self: flex-start; background: var(--agent); }
+      .message.error { align-self: flex-start; color: var(--danger); background: #fff0f0; }
+      form { display: flex; gap: 0.6rem; padding: 1rem 1.25rem; border-top: 1px solid var(--line); }
+      form input { flex: 1; }
+      form button {
+        border: 0;
+        border-radius: 8px;
+        background: var(--blue);
+        color: white;
+        font-weight: 700;
+        padding: 0.65rem 1rem;
+        cursor: pointer;
+      }
+      form button:hover { background: var(--blue-dark); }
+      form button:disabled, input:disabled, select:disabled { opacity: 0.6; }
+      @media (max-width: 720px) {
+        main { grid-template-columns: 1fr; }
+        .chat { min-height: 600px; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Applicant Support</h1>
+      <p>Demo applicant portal assistant</p>
+    </header>
+    <main>
+      <aside class="panel">
+        <label for="application-id">Application ID</label>
+        <input id="application-id" value="APP-1001" pattern="APP-[0-9]{4}" />
+        <p class="hint">
+          Sample records:
+          {% for application_id in sample_application_ids %}
+          <code>{{ application_id }}</code>{% if not loop.last %}, {% endif %}
+          {% endfor %}
+        </p>
+        <div class="model-field">
+          <label for="model-select">Model</label>
+          <select id="model-select">
+            {% for api_format, model_name in model_choices %}
+            <option value="{{ api_format }}:{{ model_name }}">{{ model_name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </aside>
+      <section class="panel chat">
+        <div class="chat-title">
+          <h2>Ask about your application</h2>
+          <div class="quick-prompts">
+            <button class="prompt" type="button">Did I pass the screening?</button>
+            <button class="prompt" type="button">Can I reschedule my call to October 27 at 2:30 PM Pacific?</button>
+            <button class="prompt" type="button">Is the Product Designer role open?</button>
+          </div>
+        </div>
+        <div id="transcript" aria-live="polite"></div>
+        <form id="message-form">
+          <input id="message-input" autocomplete="off" placeholder="Ask the HR assistant…" required />
+          <button type="submit">Send</button>
+        </form>
+      </section>
+    </main>
+    <script>
+      const form = document.getElementById("message-form");
+      const input = document.getElementById("message-input");
+      const applicationId = document.getElementById("application-id");
+      const modelSelect = document.getElementById("model-select");
+      const transcript = document.getElementById("transcript");
+      const submit = form.querySelector("button[type=submit]");
+
+      function addMessage(role, text) {
+        const element = document.createElement("div");
+        element.className = `message ${role}`;
+        element.textContent = text;
+        transcript.appendChild(element);
+        transcript.scrollTop = transcript.scrollHeight;
+        return element;
+      }
+
+      document.querySelectorAll(".prompt").forEach((button) => {
+        button.addEventListener("click", () => {
+          input.value = button.textContent;
+          input.focus();
+        });
+      });
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const message = input.value.trim();
+        if (!message || !applicationId.checkValidity()) return;
+        addMessage("user", message);
+        input.value = "";
+        const pending = addMessage("agent", "Checking…");
+        input.disabled = applicationId.disabled = modelSelect.disabled = submit.disabled = true;
+        try {
+          const response = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              application_id: applicationId.value,
+              message,
+              model_choice: modelSelect.value,
+            }),
+          });
+          const body = await response.json();
+          if (!response.ok) throw new Error(body.detail || "Request failed");
+          pending.textContent = body.reply;
+        } catch (error) {
+          pending.className = "message error";
+          pending.textContent = error.message;
+        } finally {
+          input.disabled = applicationId.disabled = modelSelect.disabled = submit.disabled = false;
+          input.focus();
+        }
+      });
+    </script>
+  </body>
+</html>
