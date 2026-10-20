@@ -13,6 +13,15 @@ services:
       - "${APPLICANT_SUPPORT_PORT:-8005}:8000"
     profiles: ["applicant-support", "all"]
 
+  audio-demo:
+    build:
+      context: .
+      dockerfile: apps/audio-demo/Dockerfile
+    env_file: apps/audio-demo/.env
+    ports:
+      - "${AUDIO_DEMO_PORT:-8004}:8000"
+    profiles: ["audio-demo", "all"]
+
   chat:
     build:
       context: .
