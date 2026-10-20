@@ -3,32 +3,12 @@ from pydantic_evals.online_capability import OnlineEvaluation
 
 from applicant_support.evals.evaluators import (
     SHARED_EVALUATORS,
-    frustration_handling,
-    grounded_correctness,
-    professionalism,
-    reply_present,
-    tool_use_appropriateness,
+    applicant_support_quality,
 )
 
 _ONLINE_ENTRIES = [
     OnlineEvaluator(
-        evaluator=reply_present,
-        sample_rate=1.0,
-    ),
-    OnlineEvaluator(
-        evaluator=tool_use_appropriateness,
-        sample_rate=1.0,
-    ),
-    OnlineEvaluator(
-        evaluator=grounded_correctness,
-        sample_rate=1.0,
-    ),
-    OnlineEvaluator(
-        evaluator=professionalism,
-        sample_rate=1.0,
-    ),
-    OnlineEvaluator(
-        evaluator=frustration_handling,
+        evaluator=applicant_support_quality,
         sample_rate=1.0,
     ),
 ]

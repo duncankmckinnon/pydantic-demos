@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Literal
 
@@ -240,16 +241,69 @@ class FrustrationHandling(Evaluator[Any, Any]):
         )
 
 
-reply_present = ReplyPresent()
-tool_use_appropriateness = ToolUseAppropriateness()
-grounded_correctness = GroundedCorrectness()
-professionalism = Professionalism()
-frustration_handling = FrustrationHandling()
+@dataclass
+class ApplicantSupportQuality(Evaluator[Any, Any]):
+    reply_present: ReplyPresent = field(default_factory=ReplyPresent)
+    tool_use: ToolUseAppropriateness = field(default_factory=ToolUseAppropriateness)
+    grounded_correctness: GroundedCorrectness = field(
+        default_factory=GroundedCorrectness
+    )
+    professionalism: Professionalism = field(default_factory=Professionalism)
+    frustration_handling: FrustrationHandling = field(
+        default_factory=FrustrationHandling
+    )
+
+    async def evaluate(
+        self, ctx: EvaluatorContext[Any, Any]
+    ) -> dict[str, EvaluationReason]:
+        reply_score = float(self.reply_present.evaluate(ctx))
+        tool_use, grounded, professionalism, frustration = await asyncio.gather(
+            self.tool_use.evaluate(ctx),
+            self.grounded_correctness.evaluate(ctx),
+            self.professionalism.evaluate(ctx),
+            self.frustration_handling.evaluate(ctx),
+        )
+        tool_score = 1.0 if tool_use.value == "appropriate" else 0.0
+        quality_scores = {
+            "ToolUseScore": tool_score,
+            "GroundedCorrectness": float(grounded.value),
+            "Professionalism": float(professionalism.value),
+            "FrustrationHandling": float(frustration.value),
+        }
+        overall_score = sum(quality_scores.values()) / len(quality_scores)
+        component_summary = ", ".join(
+            f"{name}={score:.2f}" for name, score in quality_scores.items()
+        )
+
+        return {
+            "OverallQuality": EvaluationReason(
+                value=overall_score,
+                reason=f"Equal-weight normalized average: {component_summary}.",
+            ),
+            "ReplyPresent": EvaluationReason(
+                value=reply_score,
+                reason="The agent returned a non-empty reply."
+                if reply_score
+                else "The agent returned an empty reply.",
+            ),
+            "ToolUseAppropriateness": tool_use,
+            "ToolUseScore": EvaluationReason(
+                value=tool_score,
+                reason=tool_use.reason,
+            ),
+            "GroundedCorrectness": grounded,
+            "Professionalism": professionalism,
+            "FrustrationHandling": frustration,
+        }
+
+
+applicant_support_quality = ApplicantSupportQuality()
+reply_present = applicant_support_quality.reply_present
+tool_use_appropriateness = applicant_support_quality.tool_use
+grounded_correctness = applicant_support_quality.grounded_correctness
+professionalism = applicant_support_quality.professionalism
+frustration_handling = applicant_support_quality.frustration_handling
 
 SHARED_EVALUATORS = [
-    reply_present,
-    tool_use_appropriateness,
-    grounded_correctness,
-    professionalism,
-    frustration_handling,
+    applicant_support_quality,
 ]

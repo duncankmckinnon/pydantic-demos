@@ -96,12 +96,20 @@ rubrics cannot drift.
 
 ## Online evaluations
 
-Every live agent call runs all five online evaluations. The shared model judges evaluate:
+Every live agent call runs the complete shared quality evaluation. It emits the component
+results individually:
 
+- reply presence as a diagnostic score;
 - tool-use appropriateness;
 - grounded correctness against actual tool returns;
 - professionalism;
 - frustration handling.
+
+It also emits `ToolUseScore` (`appropriate=1`, otherwise `0`) and `OverallQuality`, the
+equal-weight normalized average of tool use, grounded correctness, professionalism, and
+frustration handling. Reply presence is deliberately excluded from the aggregate so merely
+returning text does not improve the primary quality score. In Logfire experiment comparisons,
+select `OverallQuality` as the Primary metric and set Better score to Higher.
 
 The evaluation capability dispatches the judges in the background after the agent returns,
 then records their `gen_ai.evaluation.result` events in Live Evaluations and their trends in

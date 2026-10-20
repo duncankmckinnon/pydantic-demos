@@ -114,13 +114,15 @@ One exported evaluator list will be reused by the hosted dataset experiments and
 capability. Evaluators will normalize either the live agent's string output or the experiment
 wrapper's JSON-object output.
 
-The initial set is:
+The shared quality evaluator emits:
 
-- `ReplyPresent`: a free structural assertion on every invocation.
+- `ReplyPresent`: a free structural diagnostic score on every invocation.
 - `ToolUseAppropriateness`: inspects the run span tree for called tool names and uses a judge
   to label the choice as appropriate, unnecessary, or a missed opportunity. The applicant
   lookup regression should become `missed_opportunity` when `get_application_status` was
   required but absent.
+- `ToolUseScore`: converts `appropriate` to `1` and other tool-use outcomes to `0` for numeric
+  comparison.
 - `GroundedCorrectness`: gives a judge the user question, reply, and actual tool return values
   from the span tree, then scores whether the answer is supported and whether it contradicts
   the retrieved applicant or role data.
@@ -128,6 +130,10 @@ The initial set is:
   and suitable for an HR applicant interaction.
 - `FrustrationHandling`: scores whether the response acknowledges and productively resolves
   likely applicant frustration rather than escalating or dismissing it.
+- `OverallQuality`: sums tool use, grounded correctness, professionalism, and frustration
+  handling, then divides by their maximum total of `4`. Reply presence is excluded so any
+  non-empty response does not receive an automatic quality boost. This is the primary metric
+  for experiment comparisons, with Higher selected as the better direction.
 
 The LLM judges will use a stable Gateway model that is not the candidate model under test.
 Their structured outputs will include both a category/score and a short reason so failures

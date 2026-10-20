@@ -1,11 +1,13 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_evals.evaluators import EvaluationReason, EvaluatorContext
 from pydantic_evals.otel.span_tree import SpanNode, SpanTree
 
+import applicant_support.evals.evaluators as evaluators_module
 from applicant_support.evals.evaluators import (
     FrustrationHandling,
     GroundedCorrectness,
@@ -252,3 +254,47 @@ async def test_professionalism_and_frustration_preserve_structured_reasons() -> 
     assert frustration_result == EvaluationReason(
         value=0.8, reason="Acknowledges the delay."
     )
+
+
+async def test_quality_bundle_emits_components_and_normalized_overall_score() -> None:
+    quality_type = getattr(evaluators_module, "ApplicantSupportQuality", None)
+    assert quality_type is not None
+
+    evaluator = quality_type(
+        tool_use=ToolUseAppropriateness(
+            agent=_judge_agent(
+                ToolUseJudgment,
+                ToolUseJudgment(
+                    category="appropriate", explanation="The tool choice was correct."
+                ),
+            )
+        ),
+        grounded_correctness=GroundedCorrectness(
+            agent=_judge_agent(
+                ScoreJudgment,
+                ScoreJudgment(score=0.8, explanation="Mostly grounded."),
+            )
+        ),
+        professionalism=Professionalism(
+            agent=_judge_agent(
+                ScoreJudgment,
+                ScoreJudgment(score=0.6, explanation="Professional enough."),
+            )
+        ),
+        frustration_handling=FrustrationHandling(
+            agent=_judge_agent(
+                ScoreJudgment,
+                ScoreJudgment(score=1.0, explanation="Handled well."),
+            )
+        ),
+    )
+
+    results = await evaluator.evaluate(_ctx(question="Hello", output="A useful reply"))
+
+    assert results["ReplyPresent"].value == 1.0
+    assert results["ToolUseAppropriateness"].value == "appropriate"
+    assert results["ToolUseScore"].value == 1.0
+    assert results["GroundedCorrectness"].value == 0.8
+    assert results["Professionalism"].value == 0.6
+    assert results["FrustrationHandling"].value == 1.0
+    assert results["OverallQuality"].value == pytest.approx(0.85)
