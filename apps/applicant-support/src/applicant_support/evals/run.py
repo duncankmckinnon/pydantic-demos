@@ -1,35 +1,65 @@
-from pathlib import Path
+import argparse
+import asyncio
 
-from applicant_support.agent import AgentDeps, build_agent
-from applicant_support.db import ApplicantDatabase
-from applicant_support.evals.dataset import (
-    ApplicantSupportEvalInput,
-    applicant_support_eval_dataset,
+from applicant_support.config import resolve_agent_config
+from applicant_support.evals.experiments import (
+    ExperimentKind,
+    build_experiment_request,
+    run_comparison,
 )
+from applicant_support.evals.hosted import create_dataset_client, load_hosted_dataset
 from demo_core.logfire_setup import configure_logfire
 from demo_core.settings import GatewaySettings
 
 
-def main() -> None:
-    configure_logfire("applicant-support-evals")
-
-    database_path = Path(__file__).resolve().parents[3] / "data" / "evals.sqlite3"
-    database = ApplicantDatabase(database_path)
-    database.initialize()
-    agent = build_agent(GatewaySettings())
-
-    async def run_case(inputs: ApplicantSupportEvalInput) -> str:
-        result = await agent.run(
-            inputs.question,
-            deps=AgentDeps(database=database, application_id=inputs.application_id),
-        )
-        return str(result.output)
-
-    report = applicant_support_eval_dataset.evaluate_sync(
-        run_case,
-        max_concurrency=1,
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run applicant-support Logfire experiments.")
+    parser.add_argument("--kind", choices=("model", "prompt"), required=True)
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Run the first three hosted cases (the default).",
     )
-    report.print()
+    scope.add_argument(
+        "--full",
+        action="store_true",
+        help="Explicitly run every hosted case for every candidate.",
+    )
+    return parser
+
+
+async def _run(kind: ExperimentKind, *, full: bool) -> None:
+    configure_logfire("applicant-support-evals")
+    with create_dataset_client() as client:
+        hosted = load_hosted_dataset(client)
+
+    dataset = hosted
+    if not full:
+        from applicant_support.evals.experiments import _smoke_dataset
+
+        dataset = _smoke_dataset(hosted)
+
+    request = build_experiment_request(kind, control=resolve_agent_config())
+    print(
+        f"Starting {kind} {'full' if full else 'smoke'} comparison: "
+        f"{len(request.candidates)} candidates x {len(dataset.cases)} cases."
+    )
+    summaries = await run_comparison(
+        request,
+        dataset=dataset,
+        gateway_settings=GatewaySettings(),
+    )
+    for summary in summaries:
+        print(
+            f"Completed {summary.candidate}: {summary.case_count} cases as "
+            f"{summary.experiment_name}."
+        )
+
+
+def main() -> None:
+    args = _parser().parse_args()
+    asyncio.run(_run(args.kind, full=args.full))
 
 
 if __name__ == "__main__":
