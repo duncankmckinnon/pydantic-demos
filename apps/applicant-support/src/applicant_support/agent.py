@@ -1,16 +1,19 @@
 from dataclasses import dataclass
 from datetime import datetime
 
-from pydantic_ai import Agent, RunContext
+from collections.abc import Sequence
 
+from pydantic_ai import Agent, RunContext
+from pydantic_ai.capabilities import AgentCapability
+
+from applicant_support.config import ALLOWED_MODELS, DEFAULT_MODEL
 from applicant_support.db import ApplicantDatabase, ApplicationRecord, InterviewRecord, RoleRecord
 from demo_core.models import get_model
 from demo_core.settings import GatewaySettings
 
-MODEL_CHOICES: list[tuple[str, str]] = [
-    ("anthropic", "claude-sonnet-5"),
-    ("openai-responses", "gpt-5.6"),
-]
+MODEL_CHOICES: list[tuple[str, str]] = [DEFAULT_MODEL.model_choice] + sorted(
+    ALLOWED_MODELS - {DEFAULT_MODEL.model_choice}
+)
 
 
 @dataclass
@@ -19,16 +22,17 @@ class AgentDeps:
     application_id: str
 
 
-def build_agent(settings: GatewaySettings) -> Agent[AgentDeps, str]:
-    api_format, model_name = MODEL_CHOICES[0]
+def build_agent(
+    settings: GatewaySettings,
+    *,
+    capabilities: Sequence[AgentCapability[AgentDeps]] = (),
+) -> Agent[AgentDeps, str]:
+    api_format, model_name = DEFAULT_MODEL.model_choice
     agent = Agent(
         get_model(api_format, model_name, settings),
         name="applicant_support_agent",
         deps_type=AgentDeps,
-        instructions=(
-            "You are an HR representative. Answer the applicant's questions and use "
-            "the available tools when helpful."
-        ),
+        capabilities=capabilities,
     )
 
     @agent.tool
