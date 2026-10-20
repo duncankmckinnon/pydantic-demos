@@ -123,7 +123,7 @@ async def test_shared_runner_applies_config_history_and_safe_metadata(
         deps=AgentDeps(database=database, application_id="APP-1001"),
         config=config,
         history=history,
-        metadata={"session_id": "session-123", "force_online_evals": True},
+        metadata={"session_id": "session-123"},
         model=FunctionModel(respond),
     )
 
@@ -141,6 +141,5 @@ async def test_shared_runner_applies_config_history_and_safe_metadata(
         "prompt_source": "managed",
         "model_source": "managed",
         "session_id": "session-123",
-        "force_online_evals": True,
     }
     assert prompt not in repr(run_kwargs["metadata"])

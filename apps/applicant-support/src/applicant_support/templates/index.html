@@ -63,8 +63,6 @@
       .control-section { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--line); }
       .control-section h2 { margin: 0 0 0.6rem; font-size: 0.88rem; }
       .config-value { margin: 0.25rem 0 0.7rem; font: 0.74rem ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
-      .check-row { display: flex; gap: 0.5rem; align-items: flex-start; font-size: 0.78rem; line-height: 1.35; }
-      .check-row input { width: auto; margin-top: 0.15rem; }
       .secondary, .experiment-button {
         width: 100%; border: 1px solid #b9cedd; border-radius: 8px; background: white;
         color: var(--blue-dark); padding: 0.55rem 0.65rem; cursor: pointer; font-weight: 700;
@@ -141,11 +139,8 @@
           <button class="secondary" id="new-session" type="button">New session</button>
         </div>
         <div class="control-section">
-          <label class="check-row" for="full-demo-evals">
-            <input id="full-demo-evals" type="checkbox" />
-            <span>Full demo evaluations for each chat turn</span>
-          </label>
-          <p class="hint">Runs all online LLM judges for deliberate demo traffic.</p>
+          <h2>Online evaluations</h2>
+          <p class="hint">All five evaluations run after every chat turn.</p>
         </div>
         <div class="control-section">
           <h2>Experiments</h2>
@@ -182,7 +177,6 @@
       const applicationId = document.getElementById("application-id");
       const transcript = document.getElementById("transcript");
       const submit = form.querySelector("button[type=submit]");
-      const fullDemoEvals = document.getElementById("full-demo-evals");
       const resolvedModel = document.getElementById("resolved-model");
       const promptFingerprint = document.getElementById("prompt-fingerprint");
       const experimentStatus = document.getElementById("experiment-status");
@@ -295,7 +289,6 @@
             body: JSON.stringify({
               application_id: applicationId.value,
               message,
-              full_demo_evals: fullDemoEvals.checked,
             }),
           });
           const body = await response.json();

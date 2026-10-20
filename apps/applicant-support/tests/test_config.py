@@ -53,6 +53,24 @@ def test_resolve_agent_config_uses_managed_values_and_safe_metadata(
     }
 
 
+def test_resolve_agent_config_accepts_gpt_5_6_luna_rollout_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import applicant_support.config as config_module
+
+    managed_model = {
+        "api_format": "openai-responses",
+        "model_name": "gpt-5.6-luna",
+    }
+    monkeypatch.setattr(config_module, "PROMPT_VARIABLE", FakeVariable("Managed prompt"))
+    monkeypatch.setattr(config_module, "MODEL_VARIABLE", FakeVariable(managed_model))
+
+    resolved = resolve_agent_config()
+
+    assert resolved.model == AgentConfig.model_validate(managed_model)
+    assert resolved.model_source == "managed"
+
+
 def test_resolve_agent_config_rejects_non_allowlisted_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

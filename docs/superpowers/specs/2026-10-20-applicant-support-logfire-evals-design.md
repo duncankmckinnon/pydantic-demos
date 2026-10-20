@@ -114,13 +114,15 @@ One exported evaluator list will be reused by the hosted dataset experiments and
 capability. Evaluators will normalize either the live agent's string output or the experiment
 wrapper's JSON-object output.
 
-The initial set is:
+The shared quality evaluator emits:
 
-- `ReplyPresent`: a free structural assertion on every invocation.
+- `ReplyPresent`: a free structural diagnostic score on every invocation.
 - `ToolUseAppropriateness`: inspects the run span tree for called tool names and uses a judge
   to label the choice as appropriate, unnecessary, or a missed opportunity. The applicant
   lookup regression should become `missed_opportunity` when `get_application_status` was
   required but absent.
+- `ToolUseScore`: converts `appropriate` to `1` and other tool-use outcomes to `0` for numeric
+  comparison.
 - `GroundedCorrectness`: gives a judge the user question, reply, and actual tool return values
   from the span tree, then scores whether the answer is supported and whether it contradicts
   the retrieved applicant or role data.
@@ -128,16 +130,19 @@ The initial set is:
   and suitable for an HR applicant interaction.
 - `FrustrationHandling`: scores whether the response acknowledges and productively resolves
   likely applicant frustration rather than escalating or dismissing it.
+- `OverallQuality`: sums tool use, grounded correctness, professionalism, and frustration
+  handling, then divides by their maximum total of `4`. Reply presence is excluded so any
+  non-empty response does not receive an automatic quality boost. This is the primary metric
+  for experiment comparisons, with Higher selected as the better direction.
 
 The LLM judges will use a stable Gateway model that is not the candidate model under test.
 Their structured outputs will include both a category/score and a short reason so failures
 are useful in Logfire rather than opaque numbers.
 
-For routine online traffic, model-call evaluators remain sampled at `0.2`, in line with the
-repository contract; free structural checks run on every call. A local-only "full demo
-evaluations" checkbox may tag explicitly demonstrated requests so their model-call evaluators
-run at `1.0`. The sampling callback will use agent-run metadata to distinguish that deliberate
-demo traffic from normal traffic. Experiments always run the complete evaluator set.
+Because this is a local demonstration environment, every online evaluator runs on every agent
+turn. The capability dispatches the evaluators in the background after the agent returns, so
+the chat response does not wait for the four model judges to finish. Experiments also run the
+complete evaluator set.
 
 Tests disable online evaluation globally, as required by the repository, and exercise all
 evaluator parsing and span inspection with synthetic contexts or test models.
