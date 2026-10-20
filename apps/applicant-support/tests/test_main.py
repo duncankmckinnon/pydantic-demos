@@ -148,3 +148,35 @@ def test_chat_replaces_forged_session_cookie(monkeypatch, tmp_path) -> None:
     assert response.status_code == 200
     assert "../../etc/passwd" not in applicant_support.main._SESSIONS
     assert uuid.UUID(response.cookies["session_id"])
+
+
+def test_valid_but_unissued_cookie_cannot_join_another_client_session(
+    monkeypatch, tmp_path
+) -> None:
+    message_counts: list[int] = []
+
+    def record_history(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        message_counts.append(len(messages))
+        return ModelResponse(parts=[TextPart("Application update")])
+
+    app = applicant_support.main.create_applicant_support_app(
+        send_to_logfire=False, database_path=tmp_path / "applicants.sqlite3"
+    )
+    monkeypatch.setattr(
+        applicant_support.main,
+        "get_model",
+        lambda api_format, model_name, settings: FunctionModel(record_history),
+    )
+    forged_session_id = "00000000-0000-0000-0000-000000000000"
+    first_client = TestClient(app)
+    second_client = TestClient(app)
+    first_client.cookies.set("session_id", forged_session_id)
+    second_client.cookies.set("session_id", forged_session_id)
+
+    first = first_client.post("/api/chat", json=_valid_payload())
+    second = second_client.post("/api/chat", json=_valid_payload())
+
+    assert first.cookies["session_id"] != forged_session_id
+    assert second.cookies["session_id"] != forged_session_id
+    assert first.cookies["session_id"] != second.cookies["session_id"]
+    assert message_counts == [1, 1]

@@ -42,8 +42,10 @@ def _resolve_session_id(request: Request) -> str:
         try:
             uuid.UUID(cookie)
         except ValueError:
-            return str(uuid4())
-        return cookie
+            pass
+        else:
+            if cookie in _SESSIONS:
+                return cookie
     return str(uuid4())
 
 
