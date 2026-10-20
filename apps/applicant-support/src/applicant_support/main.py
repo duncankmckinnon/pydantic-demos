@@ -13,6 +13,7 @@ from pydantic_ai.models import Model
 from applicant_support.agent import AgentDeps, MODEL_CHOICES, build_agent
 from applicant_support.config import ResolvedAgentConfig, resolve_agent_config
 from applicant_support.db import ApplicantDatabase
+from applicant_support.evals.online import applicant_support_online_evaluation
 from applicant_support.service import run_applicant_turn
 from demo_core.logfire_setup import configure_logfire
 from demo_core.models import get_model
@@ -82,7 +83,10 @@ def create_applicant_support_app(
     database.initialize()
 
     gateway_settings = GatewaySettings()
-    agent = build_agent(gateway_settings)
+    agent = build_agent(
+        gateway_settings,
+        capabilities=[applicant_support_online_evaluation],
+    )
     app = create_app(title="Applicant Support Demo")
 
     @app.get("/")

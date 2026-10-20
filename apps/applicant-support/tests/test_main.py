@@ -61,6 +61,25 @@ def test_index_renders_applicant_portal_controls(tmp_path) -> None:
     assert "Did I pass the screening?" in response.text
 
 
+def test_live_agent_is_built_with_online_evaluation(monkeypatch, tmp_path) -> None:
+    from applicant_support.agent import build_agent as real_build_agent
+    from applicant_support.evals.online import applicant_support_online_evaluation
+
+    seen: dict[str, object] = {}
+
+    def recording_build(settings, *, capabilities=()):
+        seen["capabilities"] = capabilities
+        return real_build_agent(settings, capabilities=capabilities)
+
+    monkeypatch.setattr(applicant_support.main, "build_agent", recording_build)
+
+    applicant_support.main.create_applicant_support_app(
+        send_to_logfire=False, database_path=tmp_path / "applicants.sqlite3"
+    )
+
+    assert list(seen["capabilities"]) == [applicant_support_online_evaluation]
+
+
 def test_chat_returns_reply_and_sets_safe_session_cookie(monkeypatch, tmp_path) -> None:
     app = applicant_support.main.create_applicant_support_app(
         send_to_logfire=False, database_path=tmp_path / "applicants.sqlite3"
