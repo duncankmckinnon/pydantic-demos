@@ -1,8 +1,14 @@
 from pydantic_evals import Case
 from pydantic_evals.online import DEFAULT_CONFIG, OnlineEvaluator, SamplingContext
 
-from applicant_support.evals.dataset import ApplicantSupportEvalInput, applicant_support_eval_dataset
+from applicant_support.evals.dataset import (
+    DATASET_NAME,
+    ApplicantSupportCaseMetadata,
+    ApplicantSupportEvalInput,
+    build_seed_dataset,
+)
 from applicant_support.evals.evaluators import ReplyPresent, SHARED_EVALUATORS
+from applicant_support.evals.models import ApplicantSupportEvalOutput
 from applicant_support.evals.online import (
     APPLICANT_SUPPORT_ONLINE_EVALUATION,
     _online_sample_rate,
@@ -19,26 +25,58 @@ def test_dataset_covers_initial_applicant_support_scenarios() -> None:
         "closed_role",
         "unknown_application",
         "does_not_invent_salary",
+        "lookup_tool_regression",
     }
+    dataset = build_seed_dataset()
 
-    assert {case.name for case in applicant_support_eval_dataset.cases} == expected_names
-    assert all(isinstance(case, Case) for case in applicant_support_eval_dataset.cases)
+    assert dataset.name == DATASET_NAME == "applicant_support_baseline"
+    assert {case.name for case in dataset.cases} == expected_names
+    assert len({case.name for case in dataset.cases}) == len(dataset.cases)
+    assert all(isinstance(case, Case) for case in dataset.cases)
     assert all(
         isinstance(case.inputs, ApplicantSupportEvalInput)
-        for case in applicant_support_eval_dataset.cases
+        for case in dataset.cases
     )
-    assert all(case.metadata["application_id"] == case.inputs.application_id for case in applicant_support_eval_dataset.cases)
+    assert all(
+        isinstance(case.expected_output, ApplicantSupportEvalOutput)
+        for case in dataset.cases
+    )
+    assert all(
+        isinstance(case.metadata, ApplicantSupportCaseMetadata)
+        for case in dataset.cases
+    )
+    assert all(case.metadata.complexity for case in dataset.cases)
+    assert all(case.metadata.provenance == "seed" for case in dataset.cases)
+    assert all(case.metadata.tags for case in dataset.cases)
+    assert all(isinstance(case.inputs.model_dump(), dict) for case in dataset.cases)
+    assert all(isinstance(case.expected_output.model_dump(), dict) for case in dataset.cases)
+    assert all(isinstance(case.metadata.model_dump(), dict) for case in dataset.cases)
+    assert list(dataset.evaluators) == SHARED_EVALUATORS
 
 
 def test_unknown_application_case_uses_unseeded_but_valid_id() -> None:
+    dataset = build_seed_dataset()
     case = next(
         case
-        for case in applicant_support_eval_dataset.cases
+        for case in dataset.cases
         if case.name == "unknown_application"
     )
 
     assert case.inputs.application_id == "APP-9999"
-    assert case.expected_output == "The application cannot be found."
+    assert case.expected_output.reply == "The application cannot be found."
+    assert case.metadata.required_tool == "get_application_status"
+
+
+def test_lookup_regression_requires_status_tool_and_helpful_reply() -> None:
+    case = next(
+        case
+        for case in build_seed_dataset().cases
+        if case.name == "lookup_tool_regression"
+    )
+
+    assert case.metadata.required_tool == "get_application_status"
+    assert "cannot help" not in case.expected_output.reply.lower()
+    assert "look up" in case.expected_output.reply.lower()
 
 
 def test_online_evaluation_reuses_shared_evaluator_instances() -> None:
