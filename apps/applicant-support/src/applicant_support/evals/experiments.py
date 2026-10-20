@@ -53,6 +53,12 @@ PROMPT_CANDIDATES = (
     ),
 )
 
+SMOKE_CASE_NAMES = (
+    "screening_pending",
+    "reschedule_call",
+    "unsupported_profile_lookup",
+)
+
 
 class ExperimentCandidate(BaseModel):
     model_config = ConfigDict(frozen=True)
@@ -259,9 +265,15 @@ def _smoke_dataset(
     ApplicantSupportEvalOutput,
     ApplicantSupportCaseMetadata,
 ]:
+    cases_by_name = {case.name: case for case in dataset.cases}
+    missing = [name for name in SMOKE_CASE_NAMES if name not in cases_by_name]
+    if missing:
+        raise ExperimentExecutionError(
+            f"Smoke dataset is missing required case(s): {', '.join(missing)}."
+        )
     return Dataset(
         name=dataset.name,
-        cases=dataset.cases[:3],
+        cases=[cases_by_name[name] for name in SMOKE_CASE_NAMES],
         evaluators=dataset.evaluators,
         report_evaluators=dataset.report_evaluators,
     )

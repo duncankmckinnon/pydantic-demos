@@ -15,9 +15,11 @@ from applicant_support.evals.evaluators import (
     ToolUseAppropriateness,
     ToolUseJudgment,
     _called_tool_names,
+    _get_tool_use_judge,
     _normalize_reply,
     _tool_return_evidence,
 )
+from applicant_support.evals.dataset import ApplicantSupportCaseMetadata
 from applicant_support.evals.models import ApplicantSupportEvalOutput
 
 
@@ -39,6 +41,7 @@ def _ctx(
     question: str = "What is my application status?",
     output: str | ApplicantSupportEvalOutput = "You passed screening.",
     spans: tuple[SpanNode, ...] = (),
+    metadata: ApplicantSupportCaseMetadata | dict | None = None,
 ) -> EvaluatorContext:
     tree = SpanTree()
     tree.add_spans(list(spans))
@@ -47,7 +50,7 @@ def _ctx(
         inputs=question,
         output=output,
         expected_output=None,
-        metadata=None,
+        metadata=metadata,
         duration=0.0,
         _span_tree=tree,
         attributes={},
@@ -109,6 +112,88 @@ async def test_unnecessary_tool_judgment_keeps_reason() -> None:
     assert _called_tool_names(ctx) == ["search_roles"]
     assert result.value == "unnecessary"
     assert result.reason == "A greeting needed no role search."
+
+
+async def test_required_tool_metadata_detects_a_missed_non_status_tool() -> None:
+    evaluator = ToolUseAppropriateness(
+        agent=_judge_agent(
+            ToolUseJudgment,
+            ToolUseJudgment(category="appropriate", explanation="not used"),
+        )
+    )
+    ctx = _ctx(
+        question="Can you move my recruiter call?",
+        metadata=ApplicantSupportCaseMetadata(
+            application_id="APP-1001",
+            category="rescheduling",
+            complexity="complex",
+            provenance="seed",
+            tags=["mutation", "scheduling"],
+            required_tool="reschedule_screening_call",
+        ),
+    )
+
+    result = await evaluator.evaluate(ctx)
+
+    assert result == EvaluationReason(
+        value="missed_opportunity",
+        reason=(
+            "The case required reschedule_screening_call, but that tool was not called."
+        ),
+    )
+
+
+async def test_required_tool_metadata_replaces_online_keyword_fallback() -> None:
+    evaluator = ToolUseAppropriateness(
+        agent=_judge_agent(
+            ToolUseJudgment,
+            ToolUseJudgment(
+                category="appropriate", explanation="The required tool was used."
+            ),
+        )
+    )
+    ctx = _ctx(
+        question="Can you move my screening call?",
+        spans=(_span(1, "execute_tool reschedule_screening_call"),),
+        metadata=ApplicantSupportCaseMetadata(
+            application_id="APP-1001",
+            category="rescheduling",
+            complexity="complex",
+            provenance="seed",
+            tags=["mutation", "scheduling"],
+            required_tool="reschedule_screening_call",
+        ),
+    )
+
+    result = await evaluator.evaluate(ctx)
+
+    assert result == EvaluationReason(
+        value="appropriate", reason="The required tool was used."
+    )
+
+
+async def test_default_evaluator_constructs_its_judge_lazily(monkeypatch) -> None:
+    calls: list[tuple[str, type, str]] = []
+    judge = _judge_agent(
+        ToolUseJudgment,
+        ToolUseJudgment(category="appropriate", explanation="No tool was needed."),
+    )
+
+    def fake_judge_agent(name, output_type, instructions):
+        calls.append((name, output_type, instructions))
+        return judge
+
+    _get_tool_use_judge.cache_clear()
+    monkeypatch.setattr(
+        "applicant_support.evals.evaluators._judge_agent", fake_judge_agent
+    )
+    evaluator = ToolUseAppropriateness()
+
+    assert evaluator.agent is None
+    result = await evaluator.evaluate(_ctx(question="Hello there"))
+
+    assert result.value == "appropriate"
+    assert [name for name, _, _ in calls] == ["applicant_support_tool_use_judge"]
 
 
 async def test_grounded_correctness_judge_receives_tool_return_evidence() -> None:

@@ -67,6 +67,7 @@ def test_index_renders_applicant_portal_controls(tmp_path) -> None:
     assert 'id="application-id"' in response.text
     assert "APP-1001" in response.text
     assert "Did I pass the screening?" in response.text
+    assert "retrieve my user profile" in response.text
     assert 'id="model-select"' not in response.text
     assert 'id="resolved-model"' in response.text
     assert 'id="prompt-fingerprint"' in response.text

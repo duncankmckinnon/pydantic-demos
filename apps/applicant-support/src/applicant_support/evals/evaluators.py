@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -35,33 +36,47 @@ def _judge_agent(name: str, output_type: type[BaseModel], instructions: str) -> 
     )
 
 
-_TOOL_USE_JUDGE = _judge_agent(
-    "applicant_support_tool_use_judge",
-    ToolUseJudgment,
-    "Judge whether the applicant-support agent used its tools appropriately. Available "
-    "tools are get_application_status for applicant facts, reschedule_screening_call for "
-    "moving an existing screening call, and search_roles for open or closed role facts. "
-    "Return appropriate, unnecessary, or missed_opportunity with a concise explanation.",
-)
-_GROUNDEDNESS_JUDGE = _judge_agent(
-    "applicant_support_groundedness_judge",
-    ScoreJudgment,
-    "Score from 0 to 1 whether the reply is supported by the supplied tool evidence and "
-    "expected outcome, avoids invented facts, and does not contradict applicant records.",
-)
-_PROFESSIONALISM_JUDGE = _judge_agent(
-    "applicant_support_professionalism_judge",
-    ScoreJudgment,
-    "Score from 0 to 1 whether the reply is clear, respectful, appropriately bounded, and "
-    "suitable for an HR applicant interaction.",
-)
-_FRUSTRATION_JUDGE = _judge_agent(
-    "applicant_support_frustration_judge",
-    ScoreJudgment,
-    "Score from 0 to 1 whether the reply acknowledges and productively addresses any "
-    "applicant frustration without being dismissive or escalating it. A neutral question "
-    "with a helpful neutral answer may receive a full score.",
-)
+@lru_cache(maxsize=1)
+def _get_tool_use_judge() -> Agent:
+    return _judge_agent(
+        "applicant_support_tool_use_judge",
+        ToolUseJudgment,
+        "Judge whether the applicant-support agent used its tools appropriately. Available "
+        "tools are get_application_status for applicant facts, reschedule_screening_call for "
+        "moving an existing screening call, and search_roles for open or closed role facts. "
+        "Return appropriate, unnecessary, or missed_opportunity with a concise explanation.",
+    )
+
+
+@lru_cache(maxsize=1)
+def _get_groundedness_judge() -> Agent:
+    return _judge_agent(
+        "applicant_support_groundedness_judge",
+        ScoreJudgment,
+        "Score from 0 to 1 whether the reply is supported by the supplied tool evidence and "
+        "expected outcome, avoids invented facts, and does not contradict applicant records.",
+    )
+
+
+@lru_cache(maxsize=1)
+def _get_professionalism_judge() -> Agent:
+    return _judge_agent(
+        "applicant_support_professionalism_judge",
+        ScoreJudgment,
+        "Score from 0 to 1 whether the reply is clear, respectful, appropriately bounded, and "
+        "suitable for an HR applicant interaction.",
+    )
+
+
+@lru_cache(maxsize=1)
+def _get_frustration_judge() -> Agent:
+    return _judge_agent(
+        "applicant_support_frustration_judge",
+        ScoreJudgment,
+        "Score from 0 to 1 whether the reply acknowledges and productively addresses any "
+        "applicant frustration without being dismissive or escalating it. A neutral question "
+        "with a helpful neutral answer may receive a full score.",
+    )
 
 
 def _normalize_reply(output: Any) -> str:
@@ -89,6 +104,21 @@ def _called_tool_names(ctx: EvaluatorContext[Any, Any]) -> list[str]:
         )
     }
     return sorted(names)
+
+
+def _required_tool(
+    ctx: EvaluatorContext[Any, Any],
+) -> tuple[bool, str | None]:
+    metadata = ctx.metadata
+    if isinstance(metadata, dict):
+        if "required_tool" not in metadata:
+            return False, None
+        value = metadata.get("required_tool")
+    elif hasattr(metadata, "required_tool"):
+        value = getattr(metadata, "required_tool", None)
+    else:
+        return False, None
+    return True, value if isinstance(value, str) and value else None
 
 
 def _tool_return_evidence(ctx: EvaluatorContext[Any, Any]) -> list[str]:
@@ -121,12 +151,20 @@ class ReplyPresent(Evaluator[Any, Any]):
 
 @dataclass
 class ToolUseAppropriateness(Evaluator[Any, Any]):
-    agent: Agent = field(default_factory=lambda: _TOOL_USE_JUDGE)
+    agent: Agent | None = None
 
     async def evaluate(self, ctx: EvaluatorContext[Any, Any]) -> EvaluationReason:
         question = _question_text(ctx.inputs)
         tools = _called_tool_names(ctx)
-        lookup_question = any(
+        has_required_tool_metadata, required_tool = _required_tool(ctx)
+        if required_tool is not None and required_tool not in tools:
+            return EvaluationReason(
+                value="missed_opportunity",
+                reason=(
+                    f"The case required {required_tool}, but that tool was not called."
+                ),
+            )
+        lookup_question = not has_required_tool_metadata and any(
             phrase in question.lower()
             for phrase in ("application", "screening", "my status", "interview")
         )
@@ -139,7 +177,8 @@ class ToolUseAppropriateness(Evaluator[Any, Any]):
                 ),
             )
 
-        result = await self.agent.run(
+        agent = self.agent or _get_tool_use_judge()
+        result = await agent.run(
             f"Applicant question:\n{question}\n\n"
             f"Agent reply:\n{_normalize_reply(ctx.output)}\n\n"
             f"Tools called: {', '.join(tools) if tools else 'none'}."
@@ -152,11 +191,12 @@ class ToolUseAppropriateness(Evaluator[Any, Any]):
 
 @dataclass
 class GroundedCorrectness(Evaluator[Any, Any]):
-    agent: Agent = field(default_factory=lambda: _GROUNDEDNESS_JUDGE)
+    agent: Agent | None = None
 
     async def evaluate(self, ctx: EvaluatorContext[Any, Any]) -> EvaluationReason:
         evidence = _tool_return_evidence(ctx)
-        result = await self.agent.run(
+        agent = self.agent or _get_groundedness_judge()
+        result = await agent.run(
             f"Applicant question:\n{_question_text(ctx.inputs)}\n\n"
             f"Agent reply:\n{_normalize_reply(ctx.output)}\n\n"
             f"Expected outcome:\n{_expected_text(ctx.expected_output)}\n\n"
@@ -170,10 +210,11 @@ class GroundedCorrectness(Evaluator[Any, Any]):
 
 @dataclass
 class Professionalism(Evaluator[Any, Any]):
-    agent: Agent = field(default_factory=lambda: _PROFESSIONALISM_JUDGE)
+    agent: Agent | None = None
 
     async def evaluate(self, ctx: EvaluatorContext[Any, Any]) -> EvaluationReason:
-        result = await self.agent.run(
+        agent = self.agent or _get_professionalism_judge()
+        result = await agent.run(
             f"Applicant question:\n{_question_text(ctx.inputs)}\n\n"
             f"Agent reply:\n{_normalize_reply(ctx.output)}"
         )
@@ -185,10 +226,11 @@ class Professionalism(Evaluator[Any, Any]):
 
 @dataclass
 class FrustrationHandling(Evaluator[Any, Any]):
-    agent: Agent = field(default_factory=lambda: _FRUSTRATION_JUDGE)
+    agent: Agent | None = None
 
     async def evaluate(self, ctx: EvaluatorContext[Any, Any]) -> EvaluationReason:
-        result = await self.agent.run(
+        agent = self.agent or _get_frustration_judge()
+        result = await agent.run(
             f"Applicant question:\n{_question_text(ctx.inputs)}\n\n"
             f"Agent reply:\n{_normalize_reply(ctx.output)}"
         )

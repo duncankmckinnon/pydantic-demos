@@ -13,6 +13,7 @@ from applicant_support.evals.experiments import (
     ExperimentExecutionError,
     ExperimentRequest,
     _build_case_task,
+    _smoke_dataset,
     run_comparison,
 )
 from applicant_support.evals.models import ApplicantSupportEvalOutput
@@ -49,6 +50,21 @@ def test_model_candidates_use_gateway_verified_routes() -> None:
     assert ("openai-responses", "gpt-5-mini") not in choices
     assert ("anthropic", "claude-haiku-5-5") in choices
     assert ("anthropic", "claude-haiku-5.5") not in choices
+
+
+def test_smoke_dataset_uses_stable_varied_scenarios() -> None:
+    smoke = _smoke_dataset(build_seed_dataset())
+
+    assert [case.name for case in smoke.cases] == [
+        "screening_pending",
+        "reschedule_call",
+        "unsupported_profile_lookup",
+    ]
+    assert {case.metadata.complexity for case in smoke.cases} == {
+        "simple",
+        "moderate",
+        "complex",
+    }
 
 
 async def test_comparisons_hold_one_dimension_and_emit_complete_metadata(

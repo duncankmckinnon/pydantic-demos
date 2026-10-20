@@ -113,7 +113,8 @@ globally and never make a Gateway call.
 Experiments execute in this app or CLI. Logfire stores the resulting experiment traces and
 provides the side-by-side review UI; the Logfire UI itself does not execute the task.
 
-Run the two small smoke comparisons first:
+Run the two small smoke comparisons first. Each uses stable representative cases covering a
+status lookup, a scheduling change, and an unsupported profile lookup:
 
 ```bash
 uv run --package applicant-support python -m applicant_support.evals.run --kind model --smoke

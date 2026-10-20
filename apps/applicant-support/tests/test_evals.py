@@ -26,6 +26,7 @@ def test_dataset_covers_initial_applicant_support_scenarios() -> None:
         "unknown_application",
         "does_not_invent_salary",
         "lookup_tool_regression",
+        "unsupported_profile_lookup",
     }
     dataset = build_seed_dataset()
 
@@ -77,6 +78,20 @@ def test_lookup_regression_requires_status_tool_and_helpful_reply() -> None:
     assert case.metadata.required_tool == "get_application_status"
     assert "cannot help" not in case.expected_output.reply.lower()
     assert "look up" in case.expected_output.reply.lower()
+
+
+def test_profile_lookup_case_requires_a_bounded_no_tool_response() -> None:
+    case = next(
+        case
+        for case in build_seed_dataset().cases
+        if case.name == "unsupported_profile_lookup"
+    )
+
+    assert case.metadata.required_tool is None
+    assert case.metadata.complexity == "moderate"
+    assert "unsupported-tool" in case.metadata.tags
+    assert "email" in case.inputs.question.lower()
+    assert "cannot retrieve" in case.expected_output.reply.lower()
 
 
 def test_online_evaluation_reuses_shared_evaluator_instances() -> None:

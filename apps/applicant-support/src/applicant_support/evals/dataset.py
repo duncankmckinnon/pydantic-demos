@@ -158,6 +158,16 @@ def build_seed_dataset() -> Dataset[
                 required_tool="get_application_status",
                 tags=("regression", "tool-selection", "status"),
             ),
+            _case(
+                "unsupported_profile_lookup",
+                "APP-1001",
+                "Can you retrieve my user profile from the database and tell me the email on my account?",
+                "Explain that the available tools cannot retrieve a user profile or account email, and do not invent one.",
+                "unsupported_tool",
+                complexity="moderate",
+                required_tool=None,
+                tags=("unsupported-tool", "profile", "bounded-response"),
+            ),
         ],
         evaluators=SHARED_EVALUATORS,
     )

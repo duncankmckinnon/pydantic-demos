@@ -19,7 +19,7 @@ def _parser() -> argparse.ArgumentParser:
     scope.add_argument(
         "--smoke",
         action="store_true",
-        help="Run the first three hosted cases (the default).",
+        help="Run three representative hosted cases (the default).",
     )
     scope.add_argument(
         "--full",
