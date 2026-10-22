@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+
+if [ -z "${LOGFIRE_TOKEN:-}" ] || [ -z "${LOGFIRE_BASE_URL:-}" ]; then
+  echo "LOGFIRE_TOKEN and LOGFIRE_BASE_URL must both be set" >&2
+  exit 64
+fi
+
+exec /otelcol-contrib "$@"
