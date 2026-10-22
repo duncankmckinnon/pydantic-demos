@@ -15,7 +15,7 @@ class FakeGatewayClient
   def plan(destination:)
     @requests << { operation: :plan, destination: destination }
     {
-      id: "chatcmpl-plan",
+      id: "resp-plan",
       model: "gpt-5.6-20261001",
       finish_reason: "tool_calls",
       input_tokens: 120,
@@ -27,16 +27,17 @@ class FakeGatewayClient
     }
   end
 
-  def recommend(destination:, weather:, hotels:, tool_calls:)
+  def recommend(destination:, weather:, hotels:, tool_calls:, previous_response_id:)
     @requests << {
       operation: :recommend,
       destination: destination,
       weather: weather,
       hotels: hotels,
-      tool_calls: tool_calls
+      tool_calls: tool_calls,
+      previous_response_id: previous_response_id
     }
     {
-      id: "chatcmpl-final",
+      id: "resp-final",
       model: "gpt-5.6-20261001",
       finish_reason: "stop",
       input_tokens: 310,
@@ -107,6 +108,7 @@ class TravelAgentTest < Minitest::Test
     assert_equal "Pack a light jacket and consider Hotel Granvia Kyoto.", result.fetch(:recommendation)
     assert_equal ["Kyoto, Japan"], @weather.destinations
     assert_equal [{ latitude: 35.0116, longitude: 135.7681 }], @hotels.coordinates
+    assert_equal "resp-plan", @gateway.requests.fetch(1).fetch(:previous_response_id)
 
     spans = @span_exporter.finished_spans
     root = spans.find { |span| span.name == "invoke_agent travel-planner" }

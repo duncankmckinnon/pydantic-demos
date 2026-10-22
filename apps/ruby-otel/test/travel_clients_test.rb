@@ -32,6 +32,20 @@ class FailingTransport
   end
 end
 
+class CapturingJsonHttp
+  attr_reader :uri
+
+  def post_json(uri, _payload, headers:)
+    @uri = uri
+    raise "missing authorization" unless headers.fetch("Authorization") == "Bearer pylf_test"
+
+    {
+      "id" => "resp-plan", "model" => "gpt-5.6", "status" => "completed",
+      "usage" => { "input_tokens" => 1, "output_tokens" => 1 }, "output" => []
+    }
+  end
+end
+
 class ScriptedJsonServer
   attr_reader :base_url, :requests
 
@@ -218,23 +232,27 @@ class TravelClientsTest < Minitest::Test
     assert_equal [1.0], sleeps
   end
 
-  def test_gateway_client_sends_tools_and_parses_tool_calls_content_and_usage
+  def test_gateway_client_uses_responses_api_for_tools_and_continuation
     @server = ScriptedJsonServer.new([
       {
-        id: "chatcmpl-plan", model: "gpt-5.6-20261001", usage: { prompt_tokens: 120, completion_tokens: 24 },
-        choices: [{ finish_reason: "tool_calls", message: { role: "assistant", content: nil, tool_calls: [
-          { id: "call-weather", type: "function", function: { name: "get_weather", arguments: '{"destination":"Kyoto, Japan"}' } },
-          { id: "call-hotels", type: "function", function: { name: "find_hotels", arguments: '{"destination":"Kyoto, Japan"}' } }
-        ] } }]
+        id: "resp-plan", model: "gpt-5.6-20261001", status: "completed",
+        usage: { input_tokens: 120, output_tokens: 24 },
+        output: [
+          { id: "fc-weather", type: "function_call", call_id: "call-weather", name: "get_weather", arguments: '{"destination":"Kyoto, Japan"}', status: "completed" },
+          { id: "fc-hotels", type: "function_call", call_id: "call-hotels", name: "find_hotels", arguments: '{"destination":"Kyoto, Japan"}', status: "completed" }
+        ]
       },
       {
-        id: "chatcmpl-final", model: "gpt-5.6-20261001", usage: { prompt_tokens: 310, completion_tokens: 88 },
-        choices: [{ finish_reason: "stop", message: { role: "assistant", content: "Pack a light jacket." } }]
+        id: "resp-final", model: "gpt-5.6-20261001", status: "completed",
+        usage: { input_tokens: 310, output_tokens: 88 },
+        output: [{ id: "msg-final", type: "message", role: "assistant", status: "completed", content: [
+          { type: "output_text", text: "Pack a light jacket.", annotations: [] }
+        ] }]
       }
     ])
     client = RubyOtelDemo::GatewayClient.new(
       api_key: "pylf_test",
-      base_url: "#{@server.base_url}/proxy/chat/",
+      base_url: "#{@server.base_url}/proxy/openai-responses",
       model: "gpt-5.6"
     )
 
@@ -243,7 +261,8 @@ class TravelClientsTest < Minitest::Test
       destination: "Kyoto, Japan",
       weather: { weather: "partly cloudy" },
       hotels: [{ name: "Hotel Granvia Kyoto" }],
-      tool_calls: plan.fetch(:tool_calls)
+      tool_calls: plan.fetch(:tool_calls),
+      previous_response_id: plan.fetch(:id)
     )
     @server.wait_for_requests(2)
 
@@ -252,22 +271,37 @@ class TravelClientsTest < Minitest::Test
     assert_equal "Pack a light jacket.", final.fetch(:content)
     assert_equal 310, final.fetch(:input_tokens)
     assert_equal "Bearer pylf_test", @server.requests.fetch(0).fetch(:headers).fetch("authorization")
-    assert_equal "/proxy/chat/chat/completions", @server.requests.fetch(0).fetch(:target)
+    assert_equal "/proxy/openai-responses/responses", @server.requests.fetch(0).fetch(:target)
     first_payload = JSON.parse(@server.requests.fetch(0).fetch(:body))
     assert_equal "gpt-5.6", first_payload.fetch("model")
-    assert_includes first_payload.dig("messages", 0, "content"), "Never claim ratings or reviews"
-    assert_equal ["find_hotels", "get_weather"], first_payload.fetch("tools").map { |tool| tool.dig("function", "name") }.sort
+    assert_includes first_payload.fetch("instructions"), "Never claim ratings or reviews"
+    assert_equal "Plan a hotel stay in Kyoto, Japan.", first_payload.fetch("input")
+    assert_equal ["find_hotels", "get_weather"], first_payload.fetch("tools").map { |tool| tool.fetch("name") }.sort
     second_payload = JSON.parse(@server.requests.fetch(1).fetch(:body))
-    assert_equal 2, second_payload.fetch("messages").count { |message| message.fetch("role") == "tool" }
+    assert_equal "resp-plan", second_payload.fetch("previous_response_id")
+    assert_equal 2, second_payload.fetch("input").count { |item| item.fetch("type") == "function_call_output" }
   rescue NameError => error
     flunk "gateway client is not implemented: #{error.message}"
+  end
+
+  def test_gateway_client_uses_documented_responses_route_when_base_url_is_blank
+    http = CapturingJsonHttp.new
+    client = RubyOtelDemo::GatewayClient.new(
+      api_key: "pylf_test",
+      base_url: "",
+      model: "gpt-5.6",
+      http: http
+    )
+
+    client.plan(destination: "Kyoto, Japan")
+
+    assert_equal "https://gateway-us.pydantic.dev/proxy/openai-responses/responses", http.uri.to_s
   end
 
   def test_gateway_client_normalizes_null_usage
     @server = ScriptedJsonServer.new([
       {
-        id: "chatcmpl-plan", model: "gpt-5.6", usage: nil,
-        choices: [{ finish_reason: "stop", message: { role: "assistant", content: "No tools" } }]
+        id: "resp-plan", model: "gpt-5.6", status: "completed", usage: nil, output: []
       }
     ])
     client = RubyOtelDemo::GatewayClient.new(

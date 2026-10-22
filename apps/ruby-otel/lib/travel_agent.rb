@@ -34,7 +34,8 @@ module RubyOtelDemo
             destination: destination,
             weather: weather_result,
             hotels: hotel_result,
-            tool_calls: tool_calls
+            tool_calls: tool_calls,
+            previous_response_id: plan.fetch(:id)
           )
         end
 

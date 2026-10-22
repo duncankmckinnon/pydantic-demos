@@ -56,12 +56,13 @@ Set the Gateway key in `agent.env`:
 
 ```dotenv
 PYDANTIC_AI_GATEWAY_API_KEY=your-gateway-key
-PYDANTIC_AI_GATEWAY_BASE_URL=https://gateway-us.pydantic.dev/proxy/chat/
-PYDANTIC_AI_GATEWAY_MODEL=gpt-5.6
+PYDANTIC_AI_GATEWAY_BASE_URL=https://gateway-us.pydantic.dev/proxy/openai-responses
+PYDANTIC_AI_GATEWAY_MODEL=gpt-5.6-terra
 NOMINATIM_ENDPOINT=https://nominatim.openstreetmap.org/search
 ```
 
-For an EU Gateway route, use `https://gateway-eu.pydantic.dev/proxy/chat/`. This second
+For the equivalent EU Gateway route, use
+`https://gateway-eu.pydantic.dev/proxy/openai-responses`. This second
 gitignored file is loaded only by the Ruby service and contains no Logfire credential.
 
 ## Run the demo
@@ -167,7 +168,7 @@ review the lockfile when upgrading. See the official
 [OpenTelemetry Ruby status](https://opentelemetry.io/docs/languages/ruby/) and Logfire's
 [alternative-client guidance](https://pydantic.dev/docs/logfire/guides/alternative-clients/).
 
-This demo uses the Gateway's OpenAI-compatible HTTP API directly rather than Pydantic AI,
+This demo uses the Gateway's OpenAI Responses HTTP API directly rather than Pydantic AI,
 because Pydantic AI is a Python framework and the customer-facing application is Ruby. Its
 purpose is to show a real model-and-tools agent trace emitted with standard OpenTelemetry
 from Ruby and routed through a Collector.

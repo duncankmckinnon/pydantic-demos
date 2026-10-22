@@ -88,8 +88,8 @@ class ConfigTest < Minitest::Test
     assert_equal(
       {
         "PYDANTIC_AI_GATEWAY_API_KEY" => "",
-        "PYDANTIC_AI_GATEWAY_BASE_URL" => "https://gateway-us.pydantic.dev/proxy/chat/",
-        "PYDANTIC_AI_GATEWAY_MODEL" => "gpt-5.6",
+        "PYDANTIC_AI_GATEWAY_BASE_URL" => "https://gateway-us.pydantic.dev/proxy/openai-responses",
+        "PYDANTIC_AI_GATEWAY_MODEL" => "gpt-5.6-terra",
         "NOMINATIM_ENDPOINT" => "https://nominatim.openstreetmap.org/search"
       },
       agent_environment

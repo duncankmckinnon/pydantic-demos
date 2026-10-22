@@ -218,7 +218,7 @@ module RubyOtelDemo
   end
 
   class GatewayClient
-    DEFAULT_BASE_URL = "https://gateway-us.pydantic.dev/proxy/chat/"
+    DEFAULT_BASE_URL = "https://gateway-us.pydantic.dev/proxy/openai-responses"
     SYSTEM_PROMPT = <<~PROMPT.strip
       You are a concise travel planning agent. You must call both get_weather and find_hotels
       before recommending up to three hotels. Base advice only on returned tool data. Never
@@ -229,28 +229,24 @@ module RubyOtelDemo
     TOOLS = [
       {
         type: "function",
-        function: {
-          name: "get_weather",
-          description: "Get live current weather for a destination.",
-          parameters: {
-            type: "object",
-            properties: { destination: { type: "string" } },
-            required: ["destination"],
-            additionalProperties: false
-          }
+        name: "get_weather",
+        description: "Get live current weather for a destination.",
+        parameters: {
+          type: "object",
+          properties: { destination: { type: "string" } },
+          required: ["destination"],
+          additionalProperties: false
         }
       },
       {
         type: "function",
-        function: {
-          name: "find_hotels",
-          description: "Find live nearby hotel listings from OpenStreetMap.",
-          parameters: {
-            type: "object",
-            properties: { destination: { type: "string" } },
-            required: ["destination"],
-            additionalProperties: false
-          }
+        name: "find_hotels",
+        description: "Find live nearby hotel listings from OpenStreetMap.",
+        parameters: {
+          type: "object",
+          properties: { destination: { type: "string" } },
+          required: ["destination"],
+          additionalProperties: false
         }
       }
     ].freeze
@@ -261,29 +257,30 @@ module RubyOtelDemo
       raise ArgumentError, "PYDANTIC_AI_GATEWAY_API_KEY is required" if api_key.to_s.empty?
 
       @api_key = api_key
-      normalized_base_url = base_url.end_with?("/") ? base_url : "#{base_url}/"
-      @endpoint = URI.join(normalized_base_url, "chat/completions")
+      selected_base_url = base_url.to_s.strip.empty? ? DEFAULT_BASE_URL : base_url
+      normalized_base_url = selected_base_url.end_with?("/") ? selected_base_url : "#{selected_base_url}/"
+      @endpoint = URI.join(normalized_base_url, "responses")
       @model = model
       @http = http
     end
 
     def plan(destination:)
       response = complete(
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: "Plan a hotel stay in #{destination}." }
-        ],
+        instructions: SYSTEM_PROMPT,
+        input: "Plan a hotel stay in #{destination}.",
         tools: TOOLS,
         tool_choice: "required",
         parallel_tool_calls: true
       )
-      message = response.dig("choices", 0, "message") || raise(ExternalServiceError, "Gateway response had no message")
       parsed = normalized_response(response)
-      parsed[:tool_calls] = message.fetch("tool_calls", []).map do |call|
+      output = response.fetch("output")
+      raise TypeError, "Gateway output must be an array" unless output.is_a?(Array)
+
+      parsed[:tool_calls] = output.select { |item| item.is_a?(Hash) && item["type"] == "function_call" }.map do |call|
         {
-          id: call.fetch("id"),
-          name: call.dig("function", "name") || raise(KeyError, "tool name"),
-          arguments: JSON.parse(call.dig("function", "arguments") || "{}")
+          id: call.fetch("call_id"),
+          name: call.fetch("name"),
+          arguments: JSON.parse(call.fetch("arguments"))
         }
       end
       parsed
@@ -291,27 +288,26 @@ module RubyOtelDemo
       raise ExternalServiceError, "Gateway tool response was invalid: #{error.message}"
     end
 
-    def recommend(destination:, weather:, hotels:, tool_calls:)
-      assistant_calls = tool_calls.map do |call|
-        {
-          id: call.fetch(:id),
-          type: "function",
-          function: { name: call.fetch(:name), arguments: JSON.generate(call.fetch(:arguments)) }
-        }
-      end
+    def recommend(destination:, weather:, hotels:, tool_calls:, previous_response_id:)
       tool_results = tool_calls.map do |call|
         result = call.fetch(:name) == "get_weather" ? weather : hotels
-        { role: "tool", tool_call_id: call.fetch(:id), content: JSON.generate(result) }
+        { type: "function_call_output", call_id: call.fetch(:id), output: JSON.generate(result) }
       end
       response = complete(
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: "Plan a hotel stay in #{destination}." },
-          { role: "assistant", content: nil, tool_calls: assistant_calls },
-          *tool_results
-        ]
+        instructions: SYSTEM_PROMPT,
+        previous_response_id: previous_response_id,
+        input: tool_results
       )
-      normalized_response(response).merge(content: response.dig("choices", 0, "message", "content").to_s)
+      content = response.fetch("output").filter_map do |item|
+        next unless item.is_a?(Hash) && item["type"] == "message"
+
+        item.fetch("content").filter_map do |part|
+          part["text"] if part.is_a?(Hash) && part["type"] == "output_text"
+        end
+      end.flatten.join("\n")
+      raise ExternalServiceError, "Gateway response had no output text" if content.empty?
+
+      normalized_response(response).merge(content: content)
     rescue KeyError, TypeError => error
       raise ExternalServiceError, "Gateway completion response was invalid: #{error.message}"
     end
@@ -335,15 +331,12 @@ module RubyOtelDemo
       usage = response.fetch("usage")
       raise TypeError, "Gateway usage must be an object" unless usage.is_a?(Hash)
 
-      choices = response.fetch("choices")
-      raise TypeError, "Gateway choices must be a non-empty array" unless choices.is_a?(Array) && choices.first.is_a?(Hash)
-
       {
         id: response.fetch("id"),
         model: response.fetch("model"),
-        finish_reason: choices.first["finish_reason"] || "unknown",
-        input_tokens: usage.fetch("prompt_tokens"),
-        output_tokens: usage.fetch("completion_tokens")
+        finish_reason: response.fetch("status", "unknown"),
+        input_tokens: usage.fetch("input_tokens"),
+        output_tokens: usage.fetch("output_tokens")
       }
     end
   end
