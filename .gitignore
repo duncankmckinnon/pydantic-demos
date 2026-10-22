@@ -219,6 +219,7 @@ __marimo__/
 
 # Superpowers subagent-driven-development scratch workspaces
 .superpowers/
+.worktrees/
 
 # Node (annotation-studio frontend)
 node_modules/
