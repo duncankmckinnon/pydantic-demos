@@ -25,8 +25,10 @@ and Logfire. See [AGENTS.md](AGENTS.md) for the repo structure and how to add a 
 - [`annotation-studio`](apps/annotation-studio/README.md) — review-queue tool for grading
   traces from any Logfire project.
 - [`ruby-otel`](apps/ruby-otel/README.md) — live Ruby travel agent using Pydantic AI Gateway,
-  Open-Meteo, and OpenStreetMap, with AI-style traces routed through a dedicated Collector
-  to Logfire; available at <http://localhost:8006> by default.
+  the OpenAI Responses API, Open-Meteo, and OpenStreetMap. Its AI-style traces—including
+  captured agent/model requests, responses, tool calls, and token usage—route through a
+  dedicated OpenTelemetry Collector to Logfire. It is available at
+  <http://localhost:8006> by default.
 
 ## Running a demo
 
@@ -39,6 +41,23 @@ required env vars, default port, and any extra one-time setup:
    root (`docker compose --profile <name> up --build -d`).
 
 The Ruby OpenTelemetry demo is Docker-only and does not belong to the Python `uv`
-workspace.
+workspace. It uses two gitignored credential files so the Ruby application receives only
+the Gateway key while the Collector receives only the Logfire token:
+
+```bash
+cp apps/ruby-otel/.env.example apps/ruby-otel/.env
+cp apps/ruby-otel/agent.env.example apps/ruby-otel/agent.env
+docker compose --profile ruby-otel up --build
+```
+
+After setting the credentials described in the [Ruby demo README](apps/ruby-otel/README.md),
+exercise the agent with:
+
+```bash
+curl --fail-with-body \
+  --header 'Content-Type: application/json' \
+  --data '{"destination":"Kyoto, Japan"}' \
+  http://localhost:8006/travel
+```
 
 `docker compose --profile all up --build -d` runs every demo at once.

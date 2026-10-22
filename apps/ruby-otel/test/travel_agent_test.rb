@@ -85,6 +85,8 @@ end
 
 class TravelAgentTest < Minitest::Test
   def setup
+    @previous_capture_mode = ENV["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"]
+    ENV["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] = "span_only"
     @span_exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
     RubyOtelDemo::Telemetry.start!(
       span_processor: OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(@span_exporter),
@@ -97,6 +99,7 @@ class TravelAgentTest < Minitest::Test
 
   def teardown
     RubyOtelDemo::Telemetry.shutdown!
+    ENV["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] = @previous_capture_mode
   end
 
   def test_travel_agent_builds_nested_agent_model_and_live_tool_trace
@@ -115,6 +118,14 @@ class TravelAgentTest < Minitest::Test
     refute_nil root
     assert_equal "invoke_agent", root.attributes.fetch("gen_ai.operation.name")
     assert_equal "travel-planner", root.attributes.fetch("gen_ai.agent.name")
+    assert_equal(
+      "Plan a hotel stay in Kyoto, Japan.",
+      JSON.parse(root.attributes.fetch("gen_ai.input.messages")).dig(0, "parts", 0, "content")
+    )
+    assert_equal(
+      "Pack a light jacket and consider Hotel Granvia Kyoto.",
+      JSON.parse(root.attributes.fetch("gen_ai.output.messages")).dig(0, "parts", 0, "content")
+    )
 
     child_spans = spans.reject { |span| span.equal?(root) }
     assert_equal [
@@ -130,6 +141,19 @@ class TravelAgentTest < Minitest::Test
     assert model_spans.all? { |span| span.attributes.fetch("gen_ai.operation.name") == "chat" }
     assert model_spans.all? { |span| span.attributes.fetch("gen_ai.provider.name") == "openai" }
     assert_equal [24, 88], model_spans.map { |span| span.attributes.fetch("gen_ai.usage.output_tokens") }.sort
+
+    planning_span, recommendation_span = model_spans
+    assert_equal(
+      [{ "role" => "user", "parts" => [{ "type" => "text", "content" => "Plan a hotel stay in Kyoto, Japan." }] }],
+      JSON.parse(planning_span.attributes.fetch("gen_ai.input.messages"))
+    )
+    planning_output = JSON.parse(planning_span.attributes.fetch("gen_ai.output.messages"))
+    assert_equal ["find_hotels", "get_weather"], planning_output.fetch(0).fetch("parts").map { |part| part.fetch("name") }.sort
+    assert_includes recommendation_span.attributes.fetch("gen_ai.system_instructions"), "concise travel planning agent"
+    recommendation_input = JSON.parse(recommendation_span.attributes.fetch("gen_ai.input.messages"))
+    assert_equal ["assistant", "tool", "user"], recommendation_input.map { |message| message.fetch("role") }.sort
+    recommendation_output = JSON.parse(recommendation_span.attributes.fetch("gen_ai.output.messages"))
+    assert_equal "Pack a light jacket and consider Hotel Granvia Kyoto.", recommendation_output.dig(0, "parts", 0, "content")
 
     tool_spans = child_spans.select { |span| span.name.start_with?("execute_tool") }
     assert tool_spans.all? { |span| span.attributes.fetch("gen_ai.operation.name") == "execute_tool" }
@@ -154,6 +178,19 @@ class TravelAgentTest < Minitest::Test
     root = @span_exporter.finished_spans.find { |span| span.name == "invoke_agent travel-planner" }
     assert_equal OpenTelemetry::Trace::Status::ERROR, root.status.code
     assert_equal "exception", root.events.fetch(0).name
+  end
+
+  def test_model_content_is_not_captured_without_explicit_opt_in
+    ENV["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] = "no_content"
+
+    build_agent.call(destination: "Kyoto, Japan")
+
+    model_spans = @span_exporter.finished_spans.select { |span| span.name == "chat gpt-5.6" }
+    root = @span_exporter.finished_spans.find { |span| span.name == "invoke_agent travel-planner" }
+    refute root.attributes.key?("gen_ai.input.messages")
+    refute root.attributes.key?("gen_ai.output.messages")
+    assert model_spans.none? { |span| span.attributes.key?("gen_ai.input.messages") }
+    assert model_spans.none? { |span| span.attributes.key?("gen_ai.output.messages") }
   end
 
   private

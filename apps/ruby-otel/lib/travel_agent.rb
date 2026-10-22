@@ -16,6 +16,7 @@ module RubyOtelDemo
     end
 
     def call(destination:)
+      user_message = text_message("user", "Plan a hotel stay in #{destination}.")
       telemetry.in_span(
         "invoke_agent #{AGENT_NAME}",
         attributes: {
@@ -24,12 +25,20 @@ module RubyOtelDemo
           "gen_ai.workflow.name" => "live_travel_recommendation",
           "travel.destination" => destination
         }
-      ) do
-        plan = model_span { gateway.plan(destination: destination) }
+      ) do |agent_span|
+        capture_system_instructions(agent_span)
+        capture_messages(agent_span, "gen_ai.input.messages", [user_message])
+
+        plan = model_span(input_messages: [user_message]) { gateway.plan(destination: destination) }
         tool_calls = plan.fetch(:tool_calls)
         weather_result = execute_weather(tool_call(tool_calls, "get_weather"), destination)
         hotel_result = execute_hotels(tool_call(tool_calls, "find_hotels"), weather_result)
-        recommendation = model_span do
+        recommendation_input = [
+          user_message,
+          tool_call_message(tool_calls),
+          tool_result_message(tool_calls, weather_result, hotel_result)
+        ]
+        recommendation = model_span(input_messages: recommendation_input) do
           gateway.recommend(
             destination: destination,
             weather: weather_result,
@@ -38,6 +47,7 @@ module RubyOtelDemo
             previous_response_id: plan.fetch(:id)
           )
         end
+        capture_messages(agent_span, "gen_ai.output.messages", output_messages(recommendation))
 
         {
           destination: destination,
@@ -52,7 +62,7 @@ module RubyOtelDemo
 
     attr_reader :gateway, :weather, :hotels, :telemetry
 
-    def model_span
+    def model_span(input_messages:)
       telemetry.in_span(
         "chat #{gateway.model}",
         attributes: {
@@ -61,14 +71,74 @@ module RubyOtelDemo
           "gen_ai.request.model" => gateway.model
         }
       ) do |span|
+        capture_system_instructions(span)
+        capture_messages(span, "gen_ai.input.messages", input_messages)
         response = yield
         span.set_attribute("gen_ai.response.id", response.fetch(:id))
         span.set_attribute("gen_ai.response.model", response.fetch(:model))
         span.set_attribute("gen_ai.response.finish_reasons", [response.fetch(:finish_reason)])
         span.set_attribute("gen_ai.usage.input_tokens", response.fetch(:input_tokens))
         span.set_attribute("gen_ai.usage.output_tokens", response.fetch(:output_tokens))
+        capture_messages(span, "gen_ai.output.messages", output_messages(response))
         response
       end
+    end
+
+    def capture_system_instructions(span)
+      capture_messages(
+        span,
+        "gen_ai.system_instructions",
+        [{ type: "text", content: GatewayClient::SYSTEM_PROMPT }]
+      )
+    end
+
+    def capture_messages(span, attribute, messages)
+      return unless capture_message_content?
+
+      span.set_attribute(attribute, JSON.generate(messages))
+    end
+
+    def capture_message_content?
+      %w[true span_only span_and_event].include?(
+        ENV.fetch("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "no_content").downcase
+      )
+    end
+
+    def text_message(role, content)
+      { role: role, parts: [{ type: "text", content: content }] }
+    end
+
+    def tool_call_message(tool_calls)
+      {
+        role: "assistant",
+        parts: tool_calls.map do |call|
+          {
+            type: "tool_call",
+            id: call.fetch(:id),
+            name: call.fetch(:name),
+            arguments: call.fetch(:arguments)
+          }
+        end
+      }
+    end
+
+    def tool_result_message(tool_calls, weather_result, hotel_result)
+      {
+        role: "tool",
+        parts: tool_calls.map do |call|
+          result = call.fetch(:name) == "get_weather" ? weather_result : hotel_result
+          { type: "tool_call_response", id: call.fetch(:id), response: result }
+        end
+      }
+    end
+
+    def output_messages(response)
+      parts = if response[:content]
+                [{ type: "text", content: response.fetch(:content) }]
+              else
+                tool_call_message(response.fetch(:tool_calls)).fetch(:parts)
+              end
+      [{ role: "assistant", parts: parts }]
     end
 
     def execute_weather(call, fallback_destination)

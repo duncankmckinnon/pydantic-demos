@@ -1,8 +1,9 @@
 # Ruby OpenTelemetry Collector Demo
 
-A Sinatra travel agent that uses live weather and hotel data plus a real model call through
-Pydantic AI Gateway. It sends AI-style traces, logs, and metrics to a local OpenTelemetry
-Collector over OTLP/HTTP, and the Collector forwards those signals to Logfire.
+A Sinatra travel agent that accepts a destination, checks live weather and nearby hotel
+listings, and asks `gpt-5.6-terra` for a grounded recommendation through Pydantic AI
+Gateway's OpenAI Responses API. It sends AI-style traces, logs, and metrics to a local
+OpenTelemetry Collector over OTLP/HTTP, and the Collector forwards those signals to Logfire.
 
 ```text
                                       ┌──────────────────────────┐
@@ -26,11 +27,18 @@ The Ruby container receives the Gateway key and the Collector's internal address
 receives a Logfire token or Logfire endpoint, which keeps the application instrumentation
 portable to another OpenTelemetry backend.
 
+This local demo opts into prompt and completion capture with
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=span_only`. The agent and model spans
+record `gen_ai.input.messages`, `gen_ai.output.messages`, and `gen_ai.system_instructions`.
+Set that Compose environment value to `no_content` when prompts or responses may contain
+sensitive data.
+
 ## Prerequisites
 
 - Docker with Docker Compose
 - A Logfire project write token
-- A Pydantic AI Gateway API key with an OpenAI-compatible route
+- A Pydantic AI Gateway API key with access to the `openai-responses` route and
+  `gpt-5.6-terra`
 - Internet access to Pydantic AI Gateway, Open-Meteo, and OpenStreetMap Nominatim
 
 ## Configure
@@ -89,17 +97,18 @@ curl --fail-with-body http://localhost:8006/work
 curl --fail-with-body http://localhost:8006/error
 ```
 
-The second command intentionally returns HTTP `500`, so `curl` exits nonzero after
+The `/error` command intentionally returns HTTP `500`, so `curl` exits nonzero after
 printing the sanitized response. Wait at least five seconds for the configured metric
 export interval.
 
 Then show these results in the configured Logfire project:
 
 1. In Live, filter to `service_name = 'ruby-otel-demo'`.
-2. Open `invoke_agent travel-planner` and show its two `chat <model>` spans plus
-   `execute_tool get_weather` and `execute_tool find_hotels`.
-3. Show `gen_ai.request.model`, response model and ID, token usage, tool-call IDs, and the
-   live tool results on their respective spans.
+2. Open `invoke_agent travel-planner`. Its `gen_ai.input.messages` contains the destination
+   request and its `gen_ai.output.messages` contains the final recommendation.
+3. Expand its two `chat gpt-5.6-terra` spans and the `execute_tool get_weather` and
+   `execute_tool find_hotels` spans. The model spans contain the detailed two-turn
+   conversation, response IDs, token usage, tool-call IDs, and tool results.
 4. Show that both model calls went through Gateway while all telemetry went Ruby → Collector
    → Logfire.
 5. In Metrics, select `ruby_otel.requests` and group by `route` and `outcome`.
@@ -126,9 +135,11 @@ docker compose --profile ruby-otel down
 
 - `POST /travel` accepts `{"destination":"Kyoto, Japan"}`. Its HTTP server span contains
   an `invoke_agent travel-planner` span, two model spans, and live weather/hotel tool spans.
-  It increments `ruby_otel.requests` with `route=/travel`. External failures return a
-  sanitized `502` and are recorded on the trace. Destinations must be non-empty strings of
-  at most 100 characters.
+  The agent span records the top-level request and recommendation; the model spans record
+  system instructions and the detailed Responses API conversation. It increments
+  `ruby_otel.requests` with `route=/travel`. External failures return a sanitized `502` and
+  are recorded on the trace. Destinations must be non-empty strings of at most 100
+  characters.
 - `GET /work` creates the HTTP server span, a `ruby-otel.work` child span, a structured
   info log, and a `ruby_otel.requests` counter measurement with bounded attributes.
 - `GET /error` records an exception and error status, emits a structured error log, and
@@ -141,9 +152,10 @@ Service metadata is fixed to `service.name=ruby-otel-demo`, `service.version=0.1
 
 ## Verification boundary
 
-The repository tests verify route behavior, credential isolation, provider shutdown,
-Collector configuration, and actual protobuf POSTs for traces, metrics, and logs against
-a loopback OTLP receiver. Collector validation and Docker builds verify the deployable
+The repository tests verify route behavior, Responses API tool calls and continuation,
+request/response content capture and opt-out, credential isolation, provider shutdown,
+Collector configuration, and actual protobuf POSTs for traces, metrics, and logs against a
+loopback OTLP receiver. Collector validation and Docker builds verify the deployable
 configuration locally.
 
 Those checks do not prove data arrived in a particular Logfire project. Before the live

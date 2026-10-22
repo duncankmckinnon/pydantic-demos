@@ -17,6 +17,7 @@ class ConfigTest < Minitest::Test
     assert_equal ["${RUBY_OTEL_PORT:-8006}:9292"], service.fetch("ports")
     assert_equal "pydantic-demos-ruby-otel:local", service["image"]
     assert_equal "http://otel-collector-ruby-otel:4318", service.fetch("environment").fetch("OTEL_EXPORTER_OTLP_ENDPOINT")
+    assert_equal "span_only", service.fetch("environment").fetch("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT")
     assert_equal "apps/ruby-otel/agent.env", service["env_file"]
     refute service.fetch("environment").key?("LOGFIRE_TOKEN")
     refute service.fetch("environment").key?("LOGFIRE_BASE_URL")
