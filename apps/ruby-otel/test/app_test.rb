@@ -32,7 +32,24 @@ class AppTest < RubyOtelDemoTest
     post "/travel", JSON.generate(destination: "  "), "CONTENT_TYPE" => "application/json"
 
     assert_equal 400, last_response.status
-    assert_equal({ "error" => "destination is required" }, parsed_body)
+    assert_equal({ "error" => "destination must be a non-empty string up to 100 characters" }, parsed_body)
+    assert_empty @travel_agent.destinations
+  end
+
+  def test_travel_rejects_wrong_json_shapes_and_excessive_destination_length
+    invalid_bodies = [
+      [], nil, "Kyoto", { destination: 42 }, { destination: ["Kyoto"] },
+      { destination: { city: "Kyoto" } }, { destination: "K" * 101 }
+    ]
+
+    invalid_bodies.each do |body|
+      post "/travel", JSON.generate(body), "CONTENT_TYPE" => "application/json"
+      assert_equal 400, last_response.status
+      assert_equal(
+        { "error" => "destination must be a non-empty string up to 100 characters" },
+        parsed_body
+      )
+    end
     assert_empty @travel_agent.destinations
   end
 

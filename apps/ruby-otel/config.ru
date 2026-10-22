@@ -19,7 +19,9 @@ RubyOtelDemo::App.set(
       model: ENV.fetch("PYDANTIC_AI_GATEWAY_MODEL", "gpt-5.6")
     ),
     weather: RubyOtelDemo::WeatherClient.new,
-    hotels: RubyOtelDemo::HotelClient.new,
+    hotels: RubyOtelDemo::HotelClient.new(
+      endpoint: ENV.fetch("NOMINATIM_ENDPOINT", RubyOtelDemo::HotelClient::ENDPOINT)
+    ),
     telemetry: RubyOtelDemo::Telemetry
   )
 )

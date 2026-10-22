@@ -76,8 +76,8 @@ class FakeHotelClient
   def nearby(latitude:, longitude:)
     @coordinates << { latitude: latitude, longitude: longitude }
     [
-      { name: "Hotel Granvia Kyoto", stars: "5", website: "https://example.test/granvia" },
-      { name: "Kyoto Century Hotel", stars: "4", website: nil }
+      { name: "Hotel Granvia Kyoto", classification_stars: "5", website: "https://example.test/granvia" },
+      { name: "Kyoto Century Hotel", classification_stars: "4", website: nil }
     ]
   end
 end

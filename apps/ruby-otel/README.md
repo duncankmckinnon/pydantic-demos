@@ -58,6 +58,7 @@ Set the Gateway key in `agent.env`:
 PYDANTIC_AI_GATEWAY_API_KEY=your-gateway-key
 PYDANTIC_AI_GATEWAY_BASE_URL=https://gateway-us.pydantic.dev/proxy/chat/
 PYDANTIC_AI_GATEWAY_MODEL=gpt-5.6
+NOMINATIM_ENDPOINT=https://nominatim.openstreetmap.org/search
 ```
 
 For an EU Gateway route, use `https://gateway-eu.pydantic.dev/proxy/chat/`. This second
@@ -102,15 +103,17 @@ Then show these results in the configured Logfire project:
    → Logfire.
 5. In Metrics, select `ruby_otel.requests` and group by `route` and `outcome`.
 
-To make the routing boundary visible, render the profile and compare the environments:
+Validate the rendered profile without printing its secret-bearing environment:
 
 ```bash
-docker compose --profile ruby-otel config
+docker compose --profile ruby-otel config --quiet
 ```
 
-`LOGFIRE_TOKEN` and `LOGFIRE_BASE_URL` appear only under the Collector service. The Ruby
-service gets `PYDANTIC_AI_GATEWAY_*` from `agent.env` plus standard `OTEL_*` settings
-pointing to `otel-collector-ruby-otel:4318`.
+In `docker-compose.yml`, `LOGFIRE_TOKEN` and `LOGFIRE_BASE_URL` are loaded only for the
+Collector service. The Ruby service gets `PYDANTIC_AI_GATEWAY_*` and `NOMINATIM_ENDPOINT`
+from `agent.env` plus standard `OTEL_*` settings pointing to
+`otel-collector-ruby-otel:4318`. Avoid an unfiltered `docker compose config` in a recorded
+demo because it renders credential values.
 
 Stop and remove the demo containers with:
 
@@ -123,7 +126,8 @@ docker compose --profile ruby-otel down
 - `POST /travel` accepts `{"destination":"Kyoto, Japan"}`. Its HTTP server span contains
   an `invoke_agent travel-planner` span, two model spans, and live weather/hotel tool spans.
   It increments `ruby_otel.requests` with `route=/travel`. External failures return a
-  sanitized `502` and are recorded on the trace.
+  sanitized `502` and are recorded on the trace. Destinations must be non-empty strings of
+  at most 100 characters.
 - `GET /work` creates the HTTP server span, a `ruby-otel.work` child span, a structured
   info log, and a `ruby_otel.requests` counter measurement with bounded attributes.
 - `GET /error` records an exception and error status, emits a structured error log, and
@@ -151,7 +155,11 @@ search. They are discovery results, not verified prices, availability, ratings, 
 Nominatim use is limited to one request per second and requires attribution; this demo enforces
 that request interval and is intended only for low-volume, directly triggered local demos. See
 the [Nominatim usage policy](https://operations.osmfoundation.org/policies/nominatim/), and make
-one rehearsal request shortly before the demo.
+one rehearsal request shortly before the demo. `NOMINATIM_ENDPOINT` makes the provider
+switchable without a code change.
+
+The destination and external tool inputs/results are attached to demo spans so the agent flow is
+easy to inspect in Logfire. Do not submit personal, confidential, or regulated data to this demo.
 
 OpenTelemetry currently marks Ruby tracing as stable and Ruby metrics and logs as
 development-status. Their compatible gem versions are therefore locked for this demo;

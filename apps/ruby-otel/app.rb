@@ -7,6 +7,8 @@ require_relative "lib/travel_clients"
 
 module RubyOtelDemo
   class App < Sinatra::Base
+    DESTINATION_ERROR = "destination must be a non-empty string up to 100 characters"
+
     configure do
       set :telemetry, nil
       set :travel_agent, nil
@@ -25,8 +27,12 @@ module RubyOtelDemo
     end
 
     post "/travel" do
-      destination = JSON.parse(request.body.read).fetch("destination", "").to_s.strip
-      halt 400, json(error: "destination is required") if destination.empty?
+      payload = JSON.parse(request.body.read)
+      destination = payload["destination"] if payload.is_a?(Hash)
+      halt 400, json(error: DESTINATION_ERROR) unless destination.is_a?(String)
+
+      destination = destination.strip
+      halt 400, json(error: DESTINATION_ERROR) unless destination.length.between?(1, 100)
 
       result = settings.travel_agent.call(destination: destination)
       settings.telemetry.record_request(route: "/travel", outcome: "success")

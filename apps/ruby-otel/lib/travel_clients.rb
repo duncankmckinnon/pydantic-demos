@@ -2,6 +2,8 @@
 
 require "json"
 require "net/http"
+require "openssl"
+require "timeout"
 require "uri"
 
 module RubyOtelDemo
@@ -10,9 +12,10 @@ module RubyOtelDemo
   class HttpJsonClient
     USER_AGENT = "pydantic-demos-ruby-otel/0.1"
 
-    def initialize(open_timeout: 3, read_timeout: 12)
+    def initialize(open_timeout: 3, read_timeout: 12, transport: Net::HTTP)
       @open_timeout = open_timeout
       @read_timeout = read_timeout
+      @transport = transport
     end
 
     def get(uri)
@@ -38,7 +41,7 @@ module RubyOtelDemo
     def request(uri, request)
       request["Accept"] = "application/json"
       request["User-Agent"] = USER_AGENT
-      response = Net::HTTP.start(
+      response = @transport.start(
         uri.host,
         uri.port,
         use_ssl: uri.scheme == "https",
@@ -48,7 +51,7 @@ module RubyOtelDemo
       raise ExternalServiceError, "external service returned HTTP #{response.code}" unless response.is_a?(Net::HTTPSuccess)
 
       JSON.parse(response.body)
-    rescue JSON::ParserError, IOError, SystemCallError, Timeout::Error => error
+    rescue JSON::ParserError, IOError, SystemCallError, SocketError, Timeout::Error, OpenSSL::SSL::SSLError => error
       raise ExternalServiceError, "external service request failed: #{error.class}"
     end
   end
@@ -80,21 +83,27 @@ module RubyOtelDemo
 
     def current(destination:)
       location = geocode(destination)
+      latitude = Float(location.fetch("latitude"))
+      longitude = Float(location.fetch("longitude"))
       forecast = http.get(uri(
         forecast_base_url,
         "/v1/forecast",
-        latitude: location.fetch("latitude"),
-        longitude: location.fetch("longitude"),
+        latitude: latitude,
+        longitude: longitude,
         current: CURRENT_FIELDS.join(","),
         timezone: location.fetch("timezone")
       ))
+      raise TypeError, "forecast must be an object" unless forecast.is_a?(Hash)
+
       conditions = forecast.fetch("current")
+      raise TypeError, "current conditions must be an object" unless conditions.is_a?(Hash)
+
       code = conditions.fetch("weather_code")
 
       {
         location: [location["name"], location["admin1"], location["country"]].compact.uniq.join(", "),
-        latitude: location.fetch("latitude"),
-        longitude: location.fetch("longitude"),
+        latitude: latitude,
+        longitude: longitude,
         timezone: location.fetch("timezone"),
         observed_at: conditions.fetch("time"),
         temperature_c: conditions.fetch("temperature_2m"),
@@ -104,7 +113,7 @@ module RubyOtelDemo
         weather_code: code,
         weather: WEATHER_CODES.fetch(code, "unknown conditions")
       }
-    rescue KeyError => error
+    rescue KeyError, TypeError, ArgumentError => error
       raise ExternalServiceError, "weather response was incomplete: #{error.message}"
     end
 
@@ -114,7 +123,15 @@ module RubyOtelDemo
 
     def geocode(destination)
       response = http.get(uri(geocoding_base_url, "/v1/search", name: destination, count: 1, language: "en"))
-      response.fetch("results", []).first || raise(ExternalServiceError, "destination was not found")
+      raise TypeError, "geocoding response must be an object" unless response.is_a?(Hash)
+
+      results = response["results"]
+      raise TypeError, "geocoding results must be an array" unless results.is_a?(Array)
+
+      location = results.first || raise(ExternalServiceError, "destination was not found")
+      raise TypeError, "geocoding result must be an object" unless location.is_a?(Hash)
+
+      location
     end
 
     def uri(base_url, path, query)
@@ -155,8 +172,10 @@ module RubyOtelDemo
         extratags: 1
       )
       response = rate_limited_get(uri)
+      raise TypeError, "hotel response must be an array" unless response.is_a?(Array)
+
       response.filter_map { |place| hotel(place) }
-    rescue KeyError, TypeError => error
+    rescue KeyError, TypeError, ArgumentError => error
       raise ExternalServiceError, "hotel response was incomplete: #{error.message}"
     end
 
@@ -173,13 +192,14 @@ module RubyOtelDemo
         now = clock.call(Process::CLOCK_MONOTONIC)
         last_request_at = self.class.last_request_at
         sleeper.call(MINIMUM_REQUEST_INTERVAL - (now - last_request_at)) if last_request_at && now - last_request_at < MINIMUM_REQUEST_INTERVAL
-        result = http.get(uri)
         self.class.last_request_at = clock.call(Process::CLOCK_MONOTONIC)
-        result
+        http.get(uri)
       end
     end
 
     def hotel(place)
+      raise TypeError, "hotel entry must be an object" unless place.is_a?(Hash)
+
       address = place["address"] || {}
       extra = place["extratags"] || {}
       name = address["hotel"] || place.fetch("display_name").split(",").first
@@ -187,7 +207,7 @@ module RubyOtelDemo
 
       {
         name: name,
-        stars: extra["stars"],
+        classification_stars: extra["stars"],
         address: address["road"] || place.fetch("display_name"),
         website: extra["website"] || extra["contact:website"],
         latitude: Float(place.fetch("lat")),
@@ -203,6 +223,7 @@ module RubyOtelDemo
       You are a concise travel planning agent. You must call both get_weather and find_hotels
       before recommending up to three hotels. Base advice only on returned tool data. Never
       claim live prices, room availability, or that a booking has been made.
+      Never claim ratings or reviews; classification stars are unverified OpenStreetMap metadata.
     PROMPT
 
     TOOLS = [
@@ -266,7 +287,7 @@ module RubyOtelDemo
         }
       end
       parsed
-    rescue JSON::ParserError, KeyError => error
+    rescue JSON::ParserError, KeyError, TypeError => error
       raise ExternalServiceError, "Gateway tool response was invalid: #{error.message}"
     end
 
@@ -291,7 +312,7 @@ module RubyOtelDemo
         ]
       )
       normalized_response(response).merge(content: response.dig("choices", 0, "message", "content").to_s)
-    rescue KeyError => error
+    rescue KeyError, TypeError => error
       raise ExternalServiceError, "Gateway completion response was invalid: #{error.message}"
     end
 
@@ -300,19 +321,27 @@ module RubyOtelDemo
     attr_reader :api_key, :endpoint, :http
 
     def complete(payload)
-      http.post_json(
+      response = http.post_json(
         endpoint,
         { model: model }.merge(payload),
         headers: { "Authorization" => "Bearer #{api_key}" }
       )
+      raise ExternalServiceError, "Gateway response was not an object" unless response.is_a?(Hash)
+
+      response
     end
 
     def normalized_response(response)
       usage = response.fetch("usage")
+      raise TypeError, "Gateway usage must be an object" unless usage.is_a?(Hash)
+
+      choices = response.fetch("choices")
+      raise TypeError, "Gateway choices must be a non-empty array" unless choices.is_a?(Array) && choices.first.is_a?(Hash)
+
       {
         id: response.fetch("id"),
         model: response.fetch("model"),
-        finish_reason: response.dig("choices", 0, "finish_reason") || "unknown",
+        finish_reason: choices.first["finish_reason"] || "unknown",
         input_tokens: usage.fetch("prompt_tokens"),
         output_tokens: usage.fetch("completion_tokens")
       }
