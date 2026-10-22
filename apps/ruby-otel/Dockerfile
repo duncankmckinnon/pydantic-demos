@@ -17,6 +17,7 @@ RUN groupadd --system ruby-otel \
 
 WORKDIR /app
 COPY --from=builder /usr/local/bundle /usr/local/bundle
+COPY apps/ruby-otel/Gemfile apps/ruby-otel/Gemfile.lock ./
 COPY apps/ruby-otel/app.rb apps/ruby-otel/config.ru ./
 COPY apps/ruby-otel/lib ./lib
 RUN chown -R ruby-otel:ruby-otel /app
