@@ -6,7 +6,7 @@ and Logfire. See [AGENTS.md](AGENTS.md) for the repo structure and how to add a 
 ## Layout
 
 - `packages/demo_core/` — shared library (Gateway model helper, Logfire setup, FastAPI app
-  factory, eval-judge template) used by every demo.
+  factory, eval-judge template) used by the Python agent demos.
 - `apps/<name>/` — one demo application per folder, each with its own `.env`, Dockerfile, and
   README.
 - `docker-compose.yml` — runs demos standalone (`docker compose --profile <name> up`) or
@@ -24,15 +24,21 @@ and Logfire. See [AGENTS.md](AGENTS.md) for the repo structure and how to add a 
   in a real medication database.
 - [`annotation-studio`](apps/annotation-studio/README.md) — review-queue tool for grading
   traces from any Logfire project.
+- [`ruby-otel`](apps/ruby-otel/README.md) — Sinatra service demonstrating language-neutral
+  OTLP routing through a dedicated Collector to Logfire, available at
+  <http://localhost:8006> by default.
 
 ## Running a demo
 
-Every demo follows the same pattern — see its own README (linked above) for its exact
+Most demos follow the same pattern — see each README (linked above) for its exact
 required env vars, default port, and any extra one-time setup:
 
 1. `cd apps/<name>`, `cp .env.example .env`, and fill in credentials.
 2. Run it either directly on the host (typically
    `uv run --package <name> uvicorn <name>.main:app --reload`) or in Docker from the repo
    root (`docker compose --profile <name> up --build -d`).
+
+The Ruby OpenTelemetry demo is Docker-only and does not belong to the Python `uv`
+workspace.
 
 `docker compose --profile all up --build -d` runs every demo at once.
