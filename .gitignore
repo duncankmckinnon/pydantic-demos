@@ -236,3 +236,4 @@ apps/annotation-studio/data/
 # applicant-support local SQLite data
 apps/applicant-support/data/
 *.code-workspace
+.codex/config.toml
