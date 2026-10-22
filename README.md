@@ -6,7 +6,7 @@ and Logfire. See [AGENTS.md](AGENTS.md) for the repo structure and how to add a 
 ## Layout
 
 - `packages/demo_core/` — shared library (Gateway model helper, Logfire setup, FastAPI app
-  factory, eval-judge template) used by every demo.
+  factory, eval-judge template) used by the Python agent demos.
 - `apps/<name>/` — one demo application per folder, each with its own `.env`, Dockerfile, and
   README.
 - `docker-compose.yml` — runs demos standalone (`docker compose --profile <name> up`) or
@@ -24,15 +24,26 @@ and Logfire. See [AGENTS.md](AGENTS.md) for the repo structure and how to add a 
   in a real medication database.
 - [`annotation-studio`](apps/annotation-studio/README.md) — review-queue tool for grading
   traces from any Logfire project.
+- [`ruby-otel`](apps/ruby-otel/README.md) — Ruby travel agent with OpenTelemetry routed
+  through a Collector to Logfire.
 
 ## Running a demo
 
-Every demo follows the same pattern — see its own README (linked above) for its exact
-required env vars, default port, and any extra one-time setup:
+Each demo uses the same Docker Compose deployment pattern. See its README for the
+environment variables and any one-time setup it requires:
 
-1. `cd apps/<name>`, `cp .env.example .env`, and fill in credentials.
-2. Run it either directly on the host (typically
-   `uv run --package <name> uvicorn <name>.main:app --reload`) or in Docker from the repo
-   root (`docker compose --profile <name> up --build -d`).
+```bash
+docker compose --profile <name> up --build -d
+```
 
-`docker compose --profile all up --build -d` runs every demo at once.
+To run every demo:
+
+```bash
+docker compose --profile all up --build -d
+```
+
+To stop the Compose project:
+
+```bash
+docker compose down
+```

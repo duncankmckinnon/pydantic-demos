@@ -40,6 +40,45 @@ services:
     env_file: apps/chat/.env
     profiles: ["chat", "all"]
 
+  otel-collector-ruby-otel:
+    build:
+      context: .
+      dockerfile: apps/ruby-otel/Collector.Dockerfile
+    user: "0:0"
+    env_file: apps/ruby-otel/.env
+    environment:
+      OTEL_RESOURCE_ATTRIBUTES: host.name=ruby-otel-local-host
+    volumes:
+      - ./infra/otel-collector/ruby-otel.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /:/hostfs:ro
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:13133/"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+    profiles: ["ruby-otel", "all"]
+
+  ruby-otel:
+    image: pydantic-demos-ruby-otel:local
+    build:
+      context: .
+      dockerfile: apps/ruby-otel/Dockerfile
+    env_file: apps/ruby-otel/agent.env
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector-ruby-otel:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: span_only
+      OTEL_METRIC_EXPORT_INTERVAL: "5000"
+      OTEL_RESOURCE_ATTRIBUTES: service.version=0.1.0,deployment.environment.name=local
+      OTEL_SERVICE_NAME: ruby-otel-demo
+    depends_on:
+      otel-collector-ruby-otel:
+        condition: service_healthy
+    ports:
+      - "${RUBY_OTEL_PORT:-8006}:9292"
+    profiles: ["ruby-otel", "all"]
+
   rx-assistant-db:
     image: pgvector/pgvector:pg16
     environment:

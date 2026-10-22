@@ -1,0 +1,317 @@
+# frozen_string_literal: true
+
+require "cgi"
+require "socket"
+require "timeout"
+require "uri"
+
+require_relative "test_helper"
+
+begin
+  require_relative "../lib/travel_clients"
+rescue LoadError
+  nil
+end
+
+class StubJsonHttp
+  def initialize(*responses)
+    @responses = responses
+  end
+
+  def get(_uri)
+    response = @responses.shift
+    raise response if response.is_a?(Exception)
+
+    response
+  end
+end
+
+class FailingTransport
+  def self.start(*)
+    raise SocketError, "dns failure details"
+  end
+end
+
+class CapturingJsonHttp
+  attr_reader :uri
+
+  def post_json(uri, _payload, headers:)
+    @uri = uri
+    raise "missing authorization" unless headers.fetch("Authorization") == "Bearer pylf_test"
+
+    {
+      "id" => "resp-plan", "model" => "gpt-5.6", "status" => "completed",
+      "usage" => { "input_tokens" => 1, "output_tokens" => 1 }, "output" => []
+    }
+  end
+end
+
+class ScriptedJsonServer
+  attr_reader :base_url, :requests
+
+  def initialize(responses)
+    @responses = responses
+    @requests = []
+    @server = TCPServer.new("127.0.0.1", 0)
+    @base_url = "http://127.0.0.1:#{@server.local_address.ip_port}"
+    @thread = Thread.new { serve }
+  end
+
+  def wait_for_requests(count, timeout: 3)
+    Timeout.timeout(timeout) { sleep 0.01 until requests.length >= count }
+  end
+
+  def close
+    @server.close
+    @thread.join(1)
+  end
+
+  private
+
+  def serve
+    @responses.each do |response|
+      socket = @server.accept
+      method, target, = socket.gets.split
+      headers = {}
+      while (line = socket.gets)
+        break if line == "\r\n"
+
+        name, value = line.split(":", 2)
+        headers[name.downcase] = value.strip
+      end
+      body = socket.read(headers.fetch("content-length", "0").to_i)
+      @requests << { method: method, target: target, headers: headers, body: body }
+      payload = JSON.generate(response)
+      socket.write(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" \
+        "Content-Length: #{payload.bytesize}\r\nConnection: close\r\n\r\n#{payload}"
+      )
+      socket.close
+    end
+  rescue IOError, Errno::EBADF
+    nil
+  end
+end
+
+class TravelClientsTest < Minitest::Test
+  def teardown
+    @server&.close
+    RubyOtelDemo::HotelClient.last_request_at = nil if defined?(RubyOtelDemo::HotelClient)
+  end
+
+  def test_http_client_normalizes_dns_failures
+    client = RubyOtelDemo::HttpJsonClient.new(transport: FailingTransport)
+
+    error = assert_raises(RubyOtelDemo::ExternalServiceError) do
+      client.get(URI("https://example.invalid/data"))
+    end
+
+    assert_equal "external service request failed: SocketError", error.message
+  end
+
+  def test_weather_client_geocodes_destination_then_fetches_current_conditions
+    @server = ScriptedJsonServer.new([
+      {
+        results: [{
+          name: "Kyoto", country: "Japan", admin1: "Kyoto", latitude: 35.0116,
+          longitude: 135.7681, timezone: "Asia/Tokyo"
+        }]
+      },
+      {
+        current: {
+          time: "2026-10-21T12:00", temperature_2m: 18.4, apparent_temperature: 18.0,
+          precipitation: 0.0, weather_code: 2, wind_speed_10m: 7.2
+        },
+        current_units: {
+          temperature_2m: "°C", apparent_temperature: "°C", precipitation: "mm", wind_speed_10m: "km/h"
+        }
+      }
+    ])
+
+    client = RubyOtelDemo::WeatherClient.new(
+      geocoding_base_url: @server.base_url,
+      forecast_base_url: @server.base_url
+    )
+    result = client.current(destination: "Kyoto, Japan")
+    @server.wait_for_requests(2)
+
+    assert_equal(
+      {
+        location: "Kyoto, Japan",
+        latitude: 35.0116,
+        longitude: 135.7681,
+        timezone: "Asia/Tokyo",
+        observed_at: "2026-10-21T12:00",
+        temperature_c: 18.4,
+        apparent_temperature_c: 18.0,
+        precipitation_mm: 0.0,
+        wind_speed_kmh: 7.2,
+        weather_code: 2,
+        weather: "partly cloudy"
+      },
+      result
+    )
+    geocoding_query = CGI.parse(URI.parse(@server.requests.fetch(0).fetch(:target)).query)
+    assert_equal ["Kyoto, Japan"], geocoding_query.fetch("name")
+    forecast_query = CGI.parse(URI.parse(@server.requests.fetch(1).fetch(:target)).query)
+    assert_equal ["35.0116"], forecast_query.fetch("latitude")
+    assert_includes forecast_query.fetch("current").first, "weather_code"
+  rescue NameError => error
+    flunk "weather client is not implemented: #{error.message}"
+  end
+
+  def test_weather_client_normalizes_null_geocoding_results
+    client = RubyOtelDemo::WeatherClient.new(http: StubJsonHttp.new({ "results" => nil }))
+
+    assert_raises(RubyOtelDemo::ExternalServiceError) do
+      client.current(destination: "Kyoto, Japan")
+    end
+  end
+
+  def test_hotel_client_returns_named_live_osm_hotels_near_coordinates
+    @server = ScriptedJsonServer.new([
+      [
+        {
+          place_id: 1, lat: "35.01", lon: "135.76", display_name: "Hotel Granvia Kyoto, Kyoto, Japan",
+          category: "tourism", type: "hotel", address: { hotel: "Hotel Granvia Kyoto", road: "Higashishiokoji" },
+          extratags: { stars: "5", website: "https://granvia.example" }
+        },
+        {
+          place_id: 2, lat: "35.02", lon: "135.77", display_name: "Kyoto Century Hotel, Kyoto, Japan",
+          category: "tourism", type: "hotel", address: { hotel: "Kyoto Century Hotel", road: "Higashishiokoji" },
+          extratags: nil
+        }
+      ]
+    ])
+
+    client = RubyOtelDemo::HotelClient.new(endpoint: "#{@server.base_url}/search")
+    result = client.nearby(latitude: 35.0116, longitude: 135.7681)
+    @server.wait_for_requests(1)
+
+    assert_equal 2, result.length
+    assert_equal "Hotel Granvia Kyoto", result.fetch(0).fetch(:name)
+    assert_equal "5", result.fetch(0).fetch(:classification_stars)
+    refute result.fetch(0).key?(:stars)
+    assert_equal "Kyoto Century Hotel", result.fetch(1).fetch(:name)
+    assert_equal "Higashishiokoji", result.fetch(1).fetch(:address)
+    request = @server.requests.fetch(0)
+    assert_equal "GET", request.fetch(:method)
+    query = CGI.parse(URI.parse(request.fetch(:target)).query)
+    assert_equal ["[hotel]"], query.fetch("q")
+    assert_equal ["1"], query.fetch("bounded")
+    assert_equal ["5"], query.fetch("limit")
+    assert_match(/pydantic-demos-ruby-otel/, request.fetch(:headers).fetch("user-agent"))
+  rescue NameError, NoMethodError, TypeError => error
+    flunk "hotel client is not implemented: #{error.message}"
+  end
+
+  def test_hotel_client_normalizes_null_response
+    client = RubyOtelDemo::HotelClient.new(http: StubJsonHttp.new(nil))
+
+    assert_raises(RubyOtelDemo::ExternalServiceError) do
+      client.nearby(latitude: 35.0116, longitude: 135.7681)
+    end
+  end
+
+  def test_failed_hotel_requests_still_observe_one_request_per_second
+    sleeps = []
+    client = RubyOtelDemo::HotelClient.new(
+      http: StubJsonHttp.new(
+        RubyOtelDemo::ExternalServiceError.new("first failure"),
+        RubyOtelDemo::ExternalServiceError.new("second failure")
+      ),
+      clock: ->(*) { 10.0 },
+      sleeper: ->(duration) { sleeps << duration }
+    )
+
+    2.times do
+      assert_raises(RubyOtelDemo::ExternalServiceError) do
+        client.nearby(latitude: 35.0116, longitude: 135.7681)
+      end
+    end
+    assert_equal [1.0], sleeps
+  end
+
+  def test_gateway_client_uses_responses_api_for_tools_and_continuation
+    @server = ScriptedJsonServer.new([
+      {
+        id: "resp-plan", model: "gpt-5.6-20261001", status: "completed",
+        usage: { input_tokens: 120, output_tokens: 24 },
+        output: [
+          { id: "fc-weather", type: "function_call", call_id: "call-weather", name: "get_weather", arguments: '{"destination":"Kyoto, Japan"}', status: "completed" },
+          { id: "fc-hotels", type: "function_call", call_id: "call-hotels", name: "find_hotels", arguments: '{"destination":"Kyoto, Japan"}', status: "completed" }
+        ]
+      },
+      {
+        id: "resp-final", model: "gpt-5.6-20261001", status: "completed",
+        usage: { input_tokens: 310, output_tokens: 88 },
+        output: [{ id: "msg-final", type: "message", role: "assistant", status: "completed", content: [
+          { type: "output_text", text: "Pack a light jacket.", annotations: [] }
+        ] }]
+      }
+    ])
+    client = RubyOtelDemo::GatewayClient.new(
+      api_key: "pylf_test",
+      base_url: "#{@server.base_url}/proxy/openai-responses",
+      model: "gpt-5.6"
+    )
+
+    plan = client.plan(destination: "Kyoto, Japan")
+    final = client.recommend(
+      destination: "Kyoto, Japan",
+      weather: { weather: "partly cloudy" },
+      hotels: [{ name: "Hotel Granvia Kyoto" }],
+      tool_calls: plan.fetch(:tool_calls),
+      previous_response_id: plan.fetch(:id)
+    )
+    @server.wait_for_requests(2)
+
+    assert_equal ["find_hotels", "get_weather"], plan.fetch(:tool_calls).map { |call| call.fetch(:name) }.sort
+    assert_equal 24, plan.fetch(:output_tokens)
+    assert_equal "Pack a light jacket.", final.fetch(:content)
+    assert_equal 310, final.fetch(:input_tokens)
+    assert_equal "Bearer pylf_test", @server.requests.fetch(0).fetch(:headers).fetch("authorization")
+    assert_equal "/proxy/openai-responses/responses", @server.requests.fetch(0).fetch(:target)
+    first_payload = JSON.parse(@server.requests.fetch(0).fetch(:body))
+    assert_equal "gpt-5.6", first_payload.fetch("model")
+    assert_includes first_payload.fetch("instructions"), "Never claim ratings or reviews"
+    assert_equal "Plan a hotel stay in Kyoto, Japan.", first_payload.fetch("input")
+    assert_equal ["find_hotels", "get_weather"], first_payload.fetch("tools").map { |tool| tool.fetch("name") }.sort
+    second_payload = JSON.parse(@server.requests.fetch(1).fetch(:body))
+    assert_equal "resp-plan", second_payload.fetch("previous_response_id")
+    assert_equal 2, second_payload.fetch("input").count { |item| item.fetch("type") == "function_call_output" }
+  rescue NameError => error
+    flunk "gateway client is not implemented: #{error.message}"
+  end
+
+  def test_gateway_client_uses_documented_responses_route_when_base_url_is_blank
+    http = CapturingJsonHttp.new
+    client = RubyOtelDemo::GatewayClient.new(
+      api_key: "pylf_test",
+      base_url: "",
+      model: "gpt-5.6",
+      http: http
+    )
+
+    client.plan(destination: "Kyoto, Japan")
+
+    assert_equal "https://gateway-us.pydantic.dev/proxy/openai-responses/responses", http.uri.to_s
+  end
+
+  def test_gateway_client_normalizes_null_usage
+    @server = ScriptedJsonServer.new([
+      {
+        id: "resp-plan", model: "gpt-5.6", status: "completed", usage: nil, output: []
+      }
+    ])
+    client = RubyOtelDemo::GatewayClient.new(
+      api_key: "pylf_test",
+      base_url: @server.base_url,
+      model: "gpt-5.6"
+    )
+
+    assert_raises(RubyOtelDemo::ExternalServiceError) do
+      client.plan(destination: "Kyoto, Japan")
+    end
+  end
+end
