@@ -44,9 +44,14 @@ services:
     build:
       context: .
       dockerfile: apps/ruby-otel/Collector.Dockerfile
+    user: "0:0"
     env_file: apps/ruby-otel/.env
+    environment:
+      OTEL_RESOURCE_ATTRIBUTES: host.name=ruby-otel-local-host
     volumes:
       - ./infra/otel-collector/ruby-otel.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /:/hostfs:ro
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:13133/"]
       interval: 2s

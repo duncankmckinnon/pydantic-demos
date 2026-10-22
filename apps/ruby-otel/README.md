@@ -3,7 +3,8 @@
 A Sinatra travel agent that accepts a destination, checks live weather and nearby hotel
 listings, and asks `gpt-5.6-terra` for a grounded recommendation through Pydantic AI
 Gateway's OpenAI Responses API. It sends AI-style traces, logs, and metrics to a local
-OpenTelemetry Collector over OTLP/HTTP, and the Collector forwards those signals to Logfire.
+OpenTelemetry Collector over OTLP/HTTP. The Collector also gathers host and scoped Docker
+metrics, then forwards every signal to Logfire.
 
 ```text
                                       ┌──────────────────────────┐
@@ -36,6 +37,7 @@ sensitive data.
 ## Prerequisites
 
 - Docker with Docker Compose
+- Access to the local Docker socket (Docker Desktop or Docker Engine)
 - A Logfire project write token
 - A Pydantic AI Gateway API key with access to the `openai-responses` route and
   `gpt-5.6-terra`
@@ -112,6 +114,21 @@ Then show these results in the configured Logfire project:
 4. Show that both model calls went through Gateway while all telemetry went Ruby → Collector
    → Logfire.
 5. In Metrics, select `ruby_otel.requests` and group by `route` and `outcome`.
+6. Open **Hosts** and select `ruby-otel-local-host` to show CPU, memory, disk, filesystem,
+   load, network, and process telemetry.
+7. Open **Docker** to show CPU, memory, network, and block I/O for the `ruby-otel` container.
+
+Infrastructure metrics are collected every 30 seconds. The Docker receiver maps Compose
+labels into resource attributes and drops every container whose `compose.service` is not
+`ruby-otel`; unrelated local containers and the Collector itself are not exported. Both
+pipelines reuse the same Logfire token as the Ruby demo, so they appear in that demo's
+project without centralizing credentials.
+
+On Docker Desktop, host metrics describe Docker's Linux virtual machine rather than the
+macOS host itself. The Collector runs as root and mounts `/` read-only at `/hostfs` so the
+hostmetrics receiver can inspect that environment. It also mounts `docker.sock` read-only,
+but access to that socket is effectively root-level control of Docker; only run this local
+demo with a trusted Collector image and configuration.
 
 Validate the rendered profile without printing its secret-bearing environment:
 

@@ -27,7 +27,8 @@ and Logfire. See [AGENTS.md](AGENTS.md) for the repo structure and how to add a 
 - [`ruby-otel`](apps/ruby-otel/README.md) — live Ruby travel agent using Pydantic AI Gateway,
   the OpenAI Responses API, Open-Meteo, and OpenStreetMap. Its AI-style traces—including
   captured agent/model requests, responses, tool calls, and token usage—route through a
-  dedicated OpenTelemetry Collector to Logfire. It is available at
+  dedicated OpenTelemetry Collector to Logfire; the same Collector reports host metrics and
+  Docker metrics scoped to the demo container. It is available at
   <http://localhost:8006> by default.
 
 ## Running a demo

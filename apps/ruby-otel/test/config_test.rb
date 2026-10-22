@@ -35,6 +35,18 @@ class ConfigTest < Minitest::Test
     refute_match(/:latest\b/, dockerfile)
   end
 
+  def test_collector_can_read_host_and_docker_metrics
+    service = compose.fetch("services").fetch("otel-collector-ruby-otel")
+
+    assert_equal "0:0", service.fetch("user")
+    assert_includes service.fetch("volumes"), "/var/run/docker.sock:/var/run/docker.sock:ro"
+    assert_includes service.fetch("volumes"), "/:/hostfs:ro"
+    assert_equal(
+      "host.name=ruby-otel-local-host",
+      service.fetch("environment").fetch("OTEL_RESOURCE_ATTRIBUTES")
+    )
+  end
+
   def test_collector_has_three_active_otlp_pipelines_and_health_check
     config = YAML.safe_load_file(COLLECTOR_CONFIG)
     receiver = config.fetch("receivers").fetch("otlp").fetch("protocols").fetch("http")
@@ -51,6 +63,34 @@ class ConfigTest < Minitest::Test
       assert_equal ["memory_limiter", "batch"], pipeline.fetch("processors")
       assert_equal ["otlphttp/logfire"], pipeline.fetch("exporters")
     end
+  end
+
+  def test_collector_has_scoped_host_and_docker_metric_pipelines
+    config = YAML.safe_load_file(COLLECTOR_CONFIG)
+    receivers = config.fetch("receivers")
+    processors = config.fetch("processors")
+    pipelines = config.fetch("service").fetch("pipelines")
+
+    hostmetrics = receivers.fetch("hostmetrics")
+    assert_equal "/hostfs", hostmetrics.fetch("root_path")
+    assert_equal %w[cpu disk filesystem load memory network processes], hostmetrics.fetch("scrapers").keys.sort
+
+    docker_stats = receivers.fetch("docker_stats")
+    assert_equal "unix:///var/run/docker.sock", docker_stats.fetch("endpoint")
+    assert_equal "1.44", docker_stats.fetch("api_version")
+    assert_equal "compose.service", docker_stats.fetch("container_labels_to_metric_labels").fetch("com.docker.compose.service")
+
+    assert_equal(
+      ['resource.attributes["compose.service"] != "ruby-otel"'],
+      processors.fetch("filter/ruby-otel").fetch("metrics").fetch("metric")
+    )
+    assert_equal %w[env system], processors.fetch("resourcedetection/infra").fetch("detectors")
+    assert_equal ["hostmetrics"], pipelines.fetch("metrics/host").fetch("receivers")
+    assert_equal ["docker_stats"], pipelines.fetch("metrics/docker").fetch("receivers")
+    assert_includes pipelines.fetch("metrics/host").fetch("processors"), "resourcedetection/infra"
+    assert_includes pipelines.fetch("metrics/docker").fetch("processors"), "filter/ruby-otel"
+    assert_equal ["otlphttp/logfire"], pipelines.fetch("metrics/host").fetch("exporters")
+    assert_equal ["otlphttp/logfire"], pipelines.fetch("metrics/docker").fetch("exporters")
   end
 
   def test_collector_exports_to_logfire_using_only_its_environment

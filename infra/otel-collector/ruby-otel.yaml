@@ -7,12 +7,65 @@ receivers:
     protocols:
       http:
         endpoint: 0.0.0.0:4318
+  hostmetrics:
+    collection_interval: 30s
+    root_path: /hostfs
+    scrapers:
+      cpu:
+        metrics:
+          system.cpu.utilization:
+            enabled: true
+      disk: {}
+      filesystem:
+        include_virtual_filesystems: false
+        metrics:
+          system.filesystem.utilization:
+            enabled: true
+      load: {}
+      memory:
+        metrics:
+          system.memory.utilization:
+            enabled: true
+      network: {}
+      processes: {}
+  docker_stats:
+    endpoint: unix:///var/run/docker.sock
+    api_version: "1.44"
+    collection_interval: 30s
+    container_labels_to_metric_labels:
+      com.docker.compose.project: compose.project
+      com.docker.compose.service: compose.service
 
 processors:
   memory_limiter:
     check_interval: 1s
     limit_mib: 128
     spike_limit_mib: 32
+  resourcedetection/infra:
+    detectors: [env, system]
+    system:
+      hostname_sources: [os]
+  resource/host:
+    attributes:
+      - key: service.name
+        value: ruby-otel-host
+        action: upsert
+      - key: service.instance.id
+        value: ruby-otel-local-host
+        action: upsert
+  resource/docker:
+    attributes:
+      - key: service.name
+        value: ruby-otel-docker-monitoring
+        action: upsert
+      - key: service.instance.id
+        value: ruby-otel-local-host
+        action: upsert
+  filter/ruby-otel:
+    error_mode: ignore
+    metrics:
+      metric:
+        - resource.attributes["compose.service"] != "ruby-otel"
   batch: {}
 
 exporters:
@@ -31,6 +84,14 @@ service:
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, batch]
+      exporters: [otlphttp/logfire]
+    metrics/host:
+      receivers: [hostmetrics]
+      processors: [memory_limiter, resourcedetection/infra, resource/host, batch]
+      exporters: [otlphttp/logfire]
+    metrics/docker:
+      receivers: [docker_stats]
+      processors: [memory_limiter, resourcedetection/infra, filter/ruby-otel, resource/docker, batch]
       exporters: [otlphttp/logfire]
     logs:
       receivers: [otlp]
