@@ -31,6 +31,20 @@ class RecordingTelemetry
   end
 end
 
+class RecordingTravelAgent
+  attr_reader :destinations
+
+  def initialize(result:)
+    @result = result
+    @destinations = []
+  end
+
+  def call(destination:)
+    @destinations << destination
+    @result
+  end
+end
+
 class RubyOtelDemoTest < Minitest::Test
   include Rack::Test::Methods
 
@@ -40,7 +54,16 @@ class RubyOtelDemoTest < Minitest::Test
 
   def setup
     @telemetry = RecordingTelemetry.new
+    @travel_agent = RecordingTravelAgent.new(
+      result: {
+        destination: "Kyoto, Japan",
+        weather: { temperature_c: 18.4, weather: "partly cloudy" },
+        hotels: [{ name: "Demo Hotel" }],
+        recommendation: "Pack a light jacket and stay near the city center."
+      }
+    )
     app.set :telemetry, @telemetry
+    app.set :travel_agent, @travel_agent
     header "Host", "localhost"
   end
 

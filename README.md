@@ -24,9 +24,9 @@ and Logfire. See [AGENTS.md](AGENTS.md) for the repo structure and how to add a 
   in a real medication database.
 - [`annotation-studio`](apps/annotation-studio/README.md) — review-queue tool for grading
   traces from any Logfire project.
-- [`ruby-otel`](apps/ruby-otel/README.md) — Sinatra service demonstrating language-neutral
-  OTLP routing through a dedicated Collector to Logfire, available at
-  <http://localhost:8006> by default.
+- [`ruby-otel`](apps/ruby-otel/README.md) — live Ruby travel agent using Pydantic AI Gateway,
+  Open-Meteo, and OpenStreetMap, with AI-style traces routed through a dedicated Collector
+  to Logfire; available at <http://localhost:8006> by default.
 
 ## Running a demo
 

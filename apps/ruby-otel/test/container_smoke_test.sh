@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-image="${RUBY_OTEL_IMAGE:-ruby-otel-collector-demo-ruby-otel:latest}"
+image="${RUBY_OTEL_IMAGE:-pydantic-demos-ruby-otel:local}"
 container_id=""
 
 cleanup() {
@@ -16,6 +16,7 @@ container_id="$(docker run --detach --rm \
   --env OTEL_TRACES_EXPORTER=none \
   --env OTEL_METRICS_EXPORTER=none \
   --env OTEL_LOGS_EXPORTER=none \
+  --env PYDANTIC_AI_GATEWAY_API_KEY=smoke-test \
   "$image")"
 
 port="$(docker port "$container_id" 9292/tcp | sed 's/.*://')"

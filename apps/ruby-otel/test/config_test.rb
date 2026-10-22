@@ -15,8 +15,9 @@ class ConfigTest < Minitest::Test
 
     assert_equal ["ruby-otel", "all"], service.fetch("profiles")
     assert_equal ["${RUBY_OTEL_PORT:-8006}:9292"], service.fetch("ports")
+    assert_equal "pydantic-demos-ruby-otel:local", service["image"]
     assert_equal "http://otel-collector-ruby-otel:4318", service.fetch("environment").fetch("OTEL_EXPORTER_OTLP_ENDPOINT")
-    refute service.key?("env_file")
+    assert_equal "apps/ruby-otel/agent.env", service["env_file"]
     refute service.fetch("environment").key?("LOGFIRE_TOKEN")
     refute service.fetch("environment").key?("LOGFIRE_BASE_URL")
   end
@@ -73,6 +74,8 @@ class ConfigTest < Minitest::Test
 
   def test_environment_examples_define_only_the_expected_values
     app_environment = dotenv(File.join(APP_ROOT, ".env.example"))
+    agent_example = File.join(APP_ROOT, "agent.env.example")
+    agent_environment = File.exist?(agent_example) ? dotenv(agent_example) : {}
     root_environment = dotenv(File.join(REPO_ROOT, ".env.example"))
 
     assert_equal(
@@ -81,6 +84,14 @@ class ConfigTest < Minitest::Test
         "LOGFIRE_BASE_URL" => "https://logfire-us.pydantic.dev"
       },
       app_environment
+    )
+    assert_equal(
+      {
+        "PYDANTIC_AI_GATEWAY_API_KEY" => "",
+        "PYDANTIC_AI_GATEWAY_BASE_URL" => "https://gateway-us.pydantic.dev/proxy/chat/",
+        "PYDANTIC_AI_GATEWAY_MODEL" => "gpt-5.6"
+      },
+      agent_environment
     )
     assert_equal "8006", root_environment.fetch("RUBY_OTEL_PORT")
   end

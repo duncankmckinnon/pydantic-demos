@@ -55,9 +55,11 @@ services:
     profiles: ["ruby-otel", "all"]
 
   ruby-otel:
+    image: pydantic-demos-ruby-otel:local
     build:
       context: .
       dockerfile: apps/ruby-otel/Dockerfile
+    env_file: apps/ruby-otel/agent.env
     environment:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector-ruby-otel:4318
       OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
