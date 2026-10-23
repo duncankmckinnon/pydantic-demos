@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "json"
 require "opentelemetry/sdk"
 require "opentelemetry-exporter-otlp"
 require "opentelemetry-metrics-sdk"
@@ -82,6 +83,26 @@ module RubyOtelDemo
       def record_request(route:, outcome:)
         ensure_started!
         @request_counter.add(1, attributes: { "route" => route, "outcome" => outcome })
+      end
+
+      def record_evaluation(name:, passed:, explanation:, target:)
+        ensure_started!
+        @logger.on_emit(
+          event_name: "gen_ai.evaluation.result",
+          body: "evaluation: #{name}=#{passed ? 'True' : 'False'}",
+          attributes: {
+            "gen_ai.evaluation.name" => name,
+            "gen_ai.evaluation.score.value" => passed ? 1.0 : 0.0,
+            "gen_ai.evaluation.score.label" => passed ? "pass" : "fail",
+            "gen_ai.evaluation.explanation" => explanation,
+            "gen_ai.evaluation.target" => target,
+            "gen_ai.evaluation.evaluator.source" => JSON.generate(
+              name: "RubyOtelDemo::TravelEvaluators",
+              arguments: {}
+            ),
+            "gen_ai.evaluation.evaluator.version" => SERVICE_VERSION
+          }
+        )
       end
 
       def record_exception(exception)

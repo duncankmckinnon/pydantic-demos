@@ -24,7 +24,7 @@ and Logfire. See [AGENTS.md](AGENTS.md) for the repo structure and how to add a 
   in a real medication database.
 - [`annotation-studio`](apps/annotation-studio/README.md) — review-queue tool for grading
   traces from any Logfire project.
-- [`ruby-otel`](apps/ruby-otel/README.md) — Ruby travel agent with OpenTelemetry routed
+- [`ruby-otel`](apps/ruby-otel/README.md) — RubyLLM travel agent with OpenTelemetry routed
   through a Collector to Logfire.
 
 ## Running a demo

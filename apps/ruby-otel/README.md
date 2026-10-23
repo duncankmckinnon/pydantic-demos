@@ -1,17 +1,17 @@
 # Ruby OpenTelemetry Collector Demo
 
-A Sinatra travel agent that accepts a destination, checks live weather and nearby hotel
-listings, and asks `gpt-5.6-terra` for a grounded recommendation through Pydantic AI
-Gateway's OpenAI Responses API. It sends AI-style traces, logs, and metrics to a local
-OpenTelemetry Collector over OTLP/HTTP. The Collector also gathers host and scoped Docker
-metrics, then forwards every signal to Logfire.
+A Sinatra travel agent built with RubyLLM. It accepts a destination, uses RubyLLM tools to
+check live weather and nearby hotel listings, and asks `gpt-5.6-terra` for a grounded
+recommendation through Pydantic AI Gateway's OpenAI Responses API. It sends AI-style traces,
+logs, and metrics to a local OpenTelemetry Collector over OTLP/HTTP. The Collector also
+gathers host and scoped Docker metrics, then forwards every signal to Logfire.
 
 ```text
                                       ┌──────────────────────────┐
                                  ┌──> │ Pydantic AI Gateway      │
                                  ├──> │ Open-Meteo               │
 ┌──────────────────────────┐     └──> │ OpenStreetMap / Nominatim│
-│ Ruby travel agent        │           └──────────────────────────┘
+│ RubyLLM travel agent     │           └──────────────────────────┘
 │ ruby-otel-demo           │
 └────────────┬─────────────┘       OTLP/HTTP       ┌────────────────────────┐
              └───────────────────────────────────> │ OpenTelemetry Collector│
@@ -29,10 +29,11 @@ receives a Logfire token or Logfire endpoint, which keeps the application instru
 portable to another OpenTelemetry backend.
 
 This local demo opts into prompt and completion capture with
-`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=span_only`. The agent and model spans
-record `gen_ai.input.messages`, `gen_ai.output.messages`, and `gen_ai.system_instructions`.
-Set that Compose environment value to `no_content` when prompts or responses may contain
-sensitive data.
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=span_only`. The parent agent span records
+`gen_ai.input.messages`, `gen_ai.output.messages`, and `gen_ai.system_instructions`; RubyLLM's
+native model spans record request, response, and token metadata, while its tool spans include
+the tool arguments and results. Set that Compose environment value to `no_content` when
+prompts or responses may contain sensitive data.
 
 ## Prerequisites
 
@@ -109,14 +110,17 @@ Then show these results in the configured Logfire project:
 2. Open `invoke_agent travel-planner`. Its `gen_ai.input.messages` contains the destination
    request and its `gen_ai.output.messages` contains the final recommendation.
 3. Expand its two `chat gpt-5.6-terra` spans and the `execute_tool get_weather` and
-   `execute_tool find_hotels` spans. The model spans contain the detailed two-turn
-   conversation, response IDs, token usage, tool-call IDs, and tool results.
+   `execute_tool find_hotels` spans. RubyLLM emits the model and tool spans natively; the
+   model spans include provider, model, finish reason, and token usage, and the tool spans
+   include tool-call IDs, arguments, and results.
 4. Show that both model calls went through Gateway while all telemetry went Ruby → Collector
    → Logfire.
-5. In Metrics, select `ruby_otel.requests` and group by `route` and `outcome`.
-6. Open **Hosts** and select `ruby-otel-local-host` to show CPU, memory, disk, filesystem,
+5. Open **Live Evaluations** to show the four checks emitted for every agent response:
+   recommendation count, hotel grounding, weather grounding, and unsupported booking claims.
+6. In Metrics, select `ruby_otel.requests` and group by `route` and `outcome`.
+7. Open **Hosts** and select `ruby-otel-local-host` to show CPU, memory, disk, filesystem,
    load, network, and process telemetry.
-7. Open **Docker** to show CPU, memory, network, and block I/O for the `ruby-otel` container.
+8. Open **Docker** to show CPU, memory, network, and block I/O for the `ruby-otel` container.
 
 Infrastructure metrics are collected every 30 seconds. The Docker receiver maps Compose
 labels into resource attributes and drops every container whose `compose.service` is not
@@ -152,8 +156,11 @@ docker compose --profile ruby-otel down
 
 - `POST /travel` accepts `{"destination":"Kyoto, Japan"}`. Its HTTP server span contains
   an `invoke_agent travel-planner` span, two model spans, and live weather/hotel tool spans.
-  The agent span records the top-level request and recommendation; the model spans record
-  system instructions and the detailed Responses API conversation. It increments
+  The agent span records the top-level request, system instructions, and recommendation;
+  RubyLLM records model and tool metadata beneath it. Four deterministic online evaluations
+  run on every response and emit trace-correlated `gen_ai.evaluation.result` events for
+  recommendation count, hotel grounding, weather grounding, and unsupported price,
+  availability, or booking claims. It increments
   `ruby_otel.requests` with `route=/travel`. External failures return a sanitized `502` and
   are recorded on the trace. Destinations must be non-empty strings of at most 100
   characters.
@@ -169,11 +176,11 @@ Service metadata is fixed to `service.name=ruby-otel-demo`, `service.version=0.1
 
 ## Verification boundary
 
-The repository tests verify route behavior, Responses API tool calls and continuation,
-request/response content capture and opt-out, credential isolation, provider shutdown,
-Collector configuration, and actual protobuf POSTs for traces, metrics, and logs against a
-loopback OTLP receiver. Collector validation and Docker builds verify the deployable
-configuration locally.
+The repository tests verify route behavior, RubyLLM's Responses API tool loop,
+request/response content capture and opt-out, native model/tool spans, credential isolation,
+provider shutdown, Collector configuration, and actual protobuf POSTs for traces, metrics,
+and logs against a loopback OTLP receiver. Collector validation and Docker builds verify the
+deployable configuration locally.
 
 Those checks do not prove data arrived in a particular Logfire project. Before the live
 demo, use that project's real write token, trigger fresh requests, and confirm the exact
@@ -197,7 +204,7 @@ review the lockfile when upgrading. See the official
 [OpenTelemetry Ruby status](https://opentelemetry.io/docs/languages/ruby/) and Logfire's
 [alternative-client guidance](https://pydantic.dev/docs/logfire/guides/alternative-clients/).
 
-This demo uses the Gateway's OpenAI Responses HTTP API directly rather than Pydantic AI,
+This demo uses RubyLLM with the Gateway's OpenAI Responses route rather than Pydantic AI,
 because Pydantic AI is a Python framework and the customer-facing application is Ruby. Its
-purpose is to show a real model-and-tools agent trace emitted with standard OpenTelemetry
-from Ruby and routed through a Collector.
+purpose is to show a real Ruby model-and-tools agent trace emitted with standard
+OpenTelemetry and routed through a Collector.
