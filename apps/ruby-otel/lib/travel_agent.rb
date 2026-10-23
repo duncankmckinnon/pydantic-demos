@@ -1,23 +1,93 @@
 # frozen_string_literal: true
 
 require "json"
+require "ruby_llm"
 
 require_relative "travel_clients"
 require_relative "travel_evaluators"
 
 module RubyOtelDemo
+  TravelRun = Struct.new(:weather, :hotels, keyword_init: true)
+
+  class TravelTool < RubyLLM::Tool
+    private
+
+    def capture_tool_io(arguments, result)
+      span = OpenTelemetry::Trace.current_span
+      span.set_attribute("gen_ai.tool.call.arguments", JSON.generate(arguments))
+      span.set_attribute("gen_ai.tool.call.result", JSON.generate(result))
+      result
+    end
+  end
+
+  class GetWeatherTool < TravelTool
+    description "Get live current weather for a destination. Call this before find_hotels."
+    parameter :destination, description: "City and country to check"
+
+    def self.tool_name = "get_weather"
+
+    def initialize(client:, run:)
+      super()
+      @client = client
+      @run = run
+    end
+
+    def execute(destination:)
+      result = @run.weather ||= @client.current(destination: destination)
+      capture_tool_io({ destination: destination }, result)
+    end
+  end
+
+  class FindHotelsTool < TravelTool
+    description "Find live nearby hotel listings from OpenStreetMap after checking the weather."
+    parameter :destination, description: "City and country where hotels should be found"
+
+    def self.tool_name = "find_hotels"
+
+    def initialize(client:, run:)
+      super()
+      @client = client
+      @run = run
+    end
+
+    def execute(destination:)
+      weather = @run.weather
+      unless weather
+        return capture_tool_io(
+          { destination: destination },
+          { error: "Call get_weather for #{destination} before find_hotels." }
+        )
+      end
+
+      result = @run.hotels ||= @client.nearby(
+        latitude: weather.fetch(:latitude),
+        longitude: weather.fetch(:longitude)
+      )
+      capture_tool_io({ destination: destination }, result)
+    end
+  end
+
   class TravelAgent
     AGENT_NAME = "travel-planner"
+    SYSTEM_PROMPT = <<~PROMPT.strip
+      You are a concise travel planning agent. You must call both get_weather and find_hotels,
+      in that order, before recommending up to three hotels. Base advice only on returned tool
+      data. Never claim live prices, room availability, or that a booking has been made.
+      Never claim ratings or reviews; classification stars are unverified OpenStreetMap metadata.
+      State the fetched weather condition or Celsius temperature. Format each hotel recommendation
+      as a numbered line beginning with its exact name from the find_hotels result.
+    PROMPT
 
-    def initialize(gateway:, weather:, hotels:, telemetry:)
-      @gateway = gateway
+    def initialize(model:, weather:, hotels:, telemetry:, chat_factory: RubyLLM.method(:chat))
+      @model = model
       @weather = weather
       @hotels = hotels
       @telemetry = telemetry
+      @chat_factory = chat_factory
     end
 
     def call(destination:)
-      user_message = text_message("user", "Plan a hotel stay in #{destination}.")
+      prompt = "Plan a hotel stay in #{destination}."
       telemetry.in_span(
         "invoke_agent #{AGENT_NAME}",
         attributes: {
@@ -28,69 +98,52 @@ module RubyOtelDemo
         }
       ) do |agent_span|
         capture_system_instructions(agent_span)
-        capture_messages(agent_span, "gen_ai.input.messages", [user_message])
+        capture_messages(agent_span, "gen_ai.input.messages", [text_message("user", prompt)])
 
-        plan = model_span(input_messages: [user_message]) { gateway.plan(destination: destination) }
-        tool_calls = plan.fetch(:tool_calls)
-        weather_result = execute_weather(tool_call(tool_calls, "get_weather"), destination)
-        hotel_result = execute_hotels(tool_call(tool_calls, "find_hotels"), weather_result)
-        recommendation_input = [
-          user_message,
-          tool_call_message(tool_calls),
-          tool_result_message(tool_calls, weather_result, hotel_result)
-        ]
-        recommendation = model_span(input_messages: recommendation_input) do
-          gateway.recommend(
-            destination: destination,
-            weather: weather_result,
-            hotels: hotel_result,
-            tool_calls: tool_calls,
-            previous_response_id: plan.fetch(:id)
-          )
-        end
-        capture_messages(agent_span, "gen_ai.output.messages", output_messages(recommendation))
-        evaluate(recommendation.fetch(:content), weather_result, hotel_result)
+        run = TravelRun.new
+        response = chat(run).ask(prompt)
+        recommendation = response&.content.to_s
+        raise ExternalServiceError, "model did not call get_weather" unless run.weather
+        raise ExternalServiceError, "model did not call find_hotels" unless run.hotels
+        raise ExternalServiceError, "Gateway response had no output text" if recommendation.empty?
+
+        capture_messages(agent_span, "gen_ai.output.messages", [text_message("assistant", recommendation)])
+        evaluate(recommendation, run.weather, run.hotels)
 
         {
           destination: destination,
-          weather: weather_result,
-          hotels: hotel_result,
-          recommendation: recommendation.fetch(:content)
+          weather: run.weather,
+          hotels: run.hotels,
+          recommendation: recommendation
         }
       end
+    rescue RubyLLM::Error => error
+      raise ExternalServiceError, "Gateway request failed: #{error.class}"
     end
 
     private
 
-    attr_reader :gateway, :weather, :hotels, :telemetry
+    attr_reader :model, :weather, :hotels, :telemetry, :chat_factory
 
-    def model_span(input_messages:)
-      telemetry.in_span(
-        "chat #{gateway.model}",
-        attributes: {
-          "gen_ai.operation.name" => "chat",
-          "gen_ai.provider.name" => "openai",
-          "gen_ai.request.model" => gateway.model
-        }
-      ) do |span|
-        capture_system_instructions(span)
-        capture_messages(span, "gen_ai.input.messages", input_messages)
-        response = yield
-        span.set_attribute("gen_ai.response.id", response.fetch(:id))
-        span.set_attribute("gen_ai.response.model", response.fetch(:model))
-        span.set_attribute("gen_ai.response.finish_reasons", [response.fetch(:finish_reason)])
-        span.set_attribute("gen_ai.usage.input_tokens", response.fetch(:input_tokens))
-        span.set_attribute("gen_ai.usage.output_tokens", response.fetch(:output_tokens))
-        capture_messages(span, "gen_ai.output.messages", output_messages(response))
-        response
-      end
+    def chat(run)
+      chat_factory.call(
+        model: model,
+        provider: :openai,
+        protocol: :responses,
+        assume_model_exists: true
+      ).with_instructions(SYSTEM_PROMPT)
+        .with_tools(
+          GetWeatherTool.new(client: weather, run: run),
+          FindHotelsTool.new(client: hotels, run: run)
+        )
+        .with_tool_options(choice: :required, calls: :many, concurrency: false)
     end
 
     def capture_system_instructions(span)
       capture_messages(
         span,
         "gen_ai.system_instructions",
-        [{ type: "text", content: GatewayClient::SYSTEM_PROMPT }]
+        [{ type: "text", content: SYSTEM_PROMPT }]
       )
     end
 
@@ -110,45 +163,6 @@ module RubyOtelDemo
       { role: role, parts: [{ type: "text", content: content }] }
     end
 
-    def tool_call_message(tool_calls)
-      {
-        role: "assistant",
-        parts: tool_calls.map do |call|
-          {
-            type: "tool_call",
-            id: call.fetch(:id),
-            name: call.fetch(:name),
-            arguments: call.fetch(:arguments)
-          }
-        end
-      }
-    end
-
-    def tool_result_message(tool_calls, weather_result, hotel_result)
-      {
-        role: "tool",
-        parts: tool_calls.map do |call|
-          result = call.fetch(:name) == "get_weather" ? weather_result : hotel_result
-          { type: "tool_call_response", id: call.fetch(:id), response: result }
-        end
-      }
-    end
-
-    def output_messages(response)
-      parts = if response[:content]
-                [{ type: "text", content: response.fetch(:content) }]
-              else
-                tool_call_message(response.fetch(:tool_calls)).fetch(:parts)
-              end
-      [{ role: "assistant", parts: parts }]
-    end
-
-    def execute_weather(call, fallback_destination)
-      arguments = call.fetch(:arguments)
-      destination = arguments.fetch("destination", fallback_destination)
-      tool_span(call, arguments) { weather.current(destination: destination) }
-    end
-
     def evaluate(response, weather_result, hotel_result)
       TravelEvaluators.evaluate(
         response: response,
@@ -162,38 +176,6 @@ module RubyOtelDemo
           target: AGENT_NAME
         )
       end
-    end
-
-    def execute_hotels(call, weather_result)
-      arguments = call.fetch(:arguments)
-      tool_span(call, arguments) do
-        hotels.nearby(
-          latitude: weather_result.fetch(:latitude),
-          longitude: weather_result.fetch(:longitude)
-        )
-      end
-    end
-
-    def tool_span(call, arguments)
-      telemetry.in_span(
-        "execute_tool #{call.fetch(:name)}",
-        attributes: {
-          "gen_ai.operation.name" => "execute_tool",
-          "gen_ai.tool.name" => call.fetch(:name),
-          "gen_ai.tool.type" => "extension",
-          "gen_ai.tool.call.id" => call.fetch(:id),
-          "gen_ai.tool.call.arguments" => JSON.generate(arguments)
-        }
-      ) do |span|
-        result = yield
-        span.set_attribute("gen_ai.tool.call.result", JSON.generate(result))
-        result
-      end
-    end
-
-    def tool_call(tool_calls, name)
-      tool_calls.find { |call| call.fetch(:name) == name } ||
-        raise(ExternalServiceError, "model did not call #{name}")
     end
   end
 end
