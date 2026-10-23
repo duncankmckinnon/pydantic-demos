@@ -7,7 +7,7 @@ require_relative "travel_clients"
 require_relative "travel_evaluators"
 
 module RubyOtelDemo
-  TravelRun = Struct.new(:weather, :hotels, keyword_init: true)
+  TravelRun = Struct.new(:destination, :weather, :hotels, keyword_init: true)
 
   class TravelTool < RubyLLM::Tool
     private
@@ -33,7 +33,7 @@ module RubyOtelDemo
     end
 
     def execute(destination:)
-      result = @run.weather ||= @client.current(destination: destination)
+      result = @run.weather ||= @client.current(destination: @run.destination)
       capture_tool_io({ destination: destination }, result)
     end
   end
@@ -55,7 +55,7 @@ module RubyOtelDemo
       unless weather
         return capture_tool_io(
           { destination: destination },
-          { error: "Call get_weather for #{destination} before find_hotels." }
+          { error: "Call get_weather for #{@run.destination} before find_hotels." }
         )
       end
 
@@ -100,7 +100,7 @@ module RubyOtelDemo
         capture_system_instructions(agent_span)
         capture_messages(agent_span, "gen_ai.input.messages", [text_message("user", prompt)])
 
-        run = TravelRun.new
+        run = TravelRun.new(destination: destination)
         response = chat(run).ask(prompt)
         recommendation = response&.content.to_s
         raise ExternalServiceError, "model did not call get_weather" unless run.weather

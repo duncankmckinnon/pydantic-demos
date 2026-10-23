@@ -6,16 +6,22 @@ require_relative "../lib/travel_agent"
 
 class FakeRubyLlmChat
   Message = Data.define(:content)
-
-  attr_reader :instructions, :prompt, :tool_options, :tools
-
-  def initialize(content: <<~TEXT.strip, tool_names: %w[get_weather find_hotels])
+  DEFAULT_CONTENT = <<~TEXT.strip
     Weather: partly cloudy, 18.4°C.
     1. Hotel Granvia Kyoto — connected to Kyoto Station.
     2. Kyoto Century Hotel — another nearby option.
   TEXT
+
+  attr_reader :instructions, :prompt, :tool_options, :tools
+
+  def initialize(
+    content: DEFAULT_CONTENT,
+    tool_names: %w[get_weather find_hotels],
+    tool_destination: "Kyoto, Japan"
+  )
     @content = content
     @tool_names = tool_names
+    @tool_destination = tool_destination
   end
 
   def with_instructions(instructions)
@@ -36,7 +42,7 @@ class FakeRubyLlmChat
   def ask(prompt)
     @prompt = prompt
     named_tools = tools.to_h { |tool| [tool.name, tool] }
-    @tool_names.each { |name| named_tools.fetch(name).execute(destination: "Kyoto, Japan") }
+    @tool_names.each { |name| named_tools.fetch(name).execute(destination: @tool_destination) }
     Message.new(@content)
   end
 end
@@ -211,6 +217,14 @@ class TravelAgentTest < Minitest::Test
     root = @span_exporter.finished_spans.find { |span| span.name == "invoke_agent travel-planner" }
     assert_equal OpenTelemetry::Trace::Status::ERROR, root.status.code
     assert_equal "exception", root.events.fetch(0).name
+  end
+
+  def test_weather_lookup_uses_the_original_request_when_the_model_rewrites_the_destination
+    @chat = FakeRubyLlmChat.new(tool_destination: "New York, USA")
+
+    build_agent.call(destination: "new york")
+
+    assert_equal ["new york"], @weather.destinations
   end
 
   def test_model_content_is_not_captured_without_explicit_opt_in
