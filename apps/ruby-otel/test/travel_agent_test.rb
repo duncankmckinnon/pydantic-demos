@@ -7,9 +7,14 @@ require_relative "../lib/travel_agent"
 class FakeGatewayClient
   attr_reader :model, :requests
 
-  def initialize
+  def initialize(content: <<~TEXT.strip)
+    Weather: partly cloudy, 18.4°C.
+    1. Hotel Granvia Kyoto — connected to Kyoto Station.
+    2. Kyoto Century Hotel — another nearby option.
+  TEXT
     @model = "gpt-5.6"
     @requests = []
+    @content = content
   end
 
   def plan(destination:)
@@ -42,7 +47,7 @@ class FakeGatewayClient
       finish_reason: "stop",
       input_tokens: 310,
       output_tokens: 88,
-      content: "Pack a light jacket and consider Hotel Granvia Kyoto."
+      content: @content
     }
   end
 end
@@ -70,16 +75,17 @@ end
 class FakeHotelClient
   attr_reader :coordinates
 
-  def initialize
+  def initialize(listings: nil)
     @coordinates = []
+    @listings = listings || [
+      { name: "Hotel Granvia Kyoto", classification_stars: "5", website: "https://example.test/granvia" },
+      { name: "Kyoto Century Hotel", classification_stars: "4", website: nil }
+    ]
   end
 
   def nearby(latitude:, longitude:)
     @coordinates << { latitude: latitude, longitude: longitude }
-    [
-      { name: "Hotel Granvia Kyoto", classification_stars: "5", website: "https://example.test/granvia" },
-      { name: "Kyoto Century Hotel", classification_stars: "4", website: nil }
-    ]
+    @listings
   end
 end
 
@@ -88,8 +94,10 @@ class TravelAgentTest < Minitest::Test
     @previous_capture_mode = ENV["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"]
     ENV["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] = "span_only"
     @span_exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
+    @log_exporter = OpenTelemetry::SDK::Logs::Export::InMemoryLogRecordExporter.new
     RubyOtelDemo::Telemetry.start!(
       span_processor: OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(@span_exporter),
+      log_record_processor: OpenTelemetry::SDK::Logs::Export::SimpleLogRecordProcessor.new(@log_exporter),
       instrument: false
     )
     @gateway = FakeGatewayClient.new
@@ -108,7 +116,7 @@ class TravelAgentTest < Minitest::Test
     result = agent.call(destination: "Kyoto, Japan")
 
     assert_equal "Kyoto, Japan", result.fetch(:destination)
-    assert_equal "Pack a light jacket and consider Hotel Granvia Kyoto.", result.fetch(:recommendation)
+    assert_includes result.fetch(:recommendation), "Hotel Granvia Kyoto"
     assert_equal ["Kyoto, Japan"], @weather.destinations
     assert_equal [{ latitude: 35.0116, longitude: 135.7681 }], @hotels.coordinates
     assert_equal "resp-plan", @gateway.requests.fetch(1).fetch(:previous_response_id)
@@ -123,7 +131,7 @@ class TravelAgentTest < Minitest::Test
       JSON.parse(root.attributes.fetch("gen_ai.input.messages")).dig(0, "parts", 0, "content")
     )
     assert_equal(
-      "Pack a light jacket and consider Hotel Granvia Kyoto.",
+      result.fetch(:recommendation),
       JSON.parse(root.attributes.fetch("gen_ai.output.messages")).dig(0, "parts", 0, "content")
     )
 
@@ -153,13 +161,83 @@ class TravelAgentTest < Minitest::Test
     recommendation_input = JSON.parse(recommendation_span.attributes.fetch("gen_ai.input.messages"))
     assert_equal ["assistant", "tool", "user"], recommendation_input.map { |message| message.fetch("role") }.sort
     recommendation_output = JSON.parse(recommendation_span.attributes.fetch("gen_ai.output.messages"))
-    assert_equal "Pack a light jacket and consider Hotel Granvia Kyoto.", recommendation_output.dig(0, "parts", 0, "content")
+    assert_equal result.fetch(:recommendation), recommendation_output.dig(0, "parts", 0, "content")
 
     tool_spans = child_spans.select { |span| span.name.start_with?("execute_tool") }
     assert tool_spans.all? { |span| span.attributes.fetch("gen_ai.operation.name") == "execute_tool" }
     assert_equal ["find_hotels", "get_weather"], tool_spans.map { |span| span.attributes.fetch("gen_ai.tool.name") }.sort
   rescue NameError => error
     flunk "travel agent is not implemented: #{error.message}"
+  end
+
+  def test_emits_four_passing_online_evaluations_on_the_agent_trace
+    build_agent.call(destination: "Kyoto, Japan")
+
+    evaluations = evaluation_records.to_h do |record|
+      [record.attributes.fetch("gen_ai.evaluation.name"), record]
+    end
+    assert_equal %w[hotel_grounding no_booking_claims recommendation_count weather_grounding], evaluations.keys.sort
+    assert evaluations.values.all? { |record| record.event_name == "gen_ai.evaluation.result" }
+    assert evaluations.values.all? { |record| record.attributes.fetch("gen_ai.evaluation.score.value") == 1.0 }
+    assert evaluations.values.all? { |record| record.attributes.fetch("gen_ai.evaluation.score.label") == "pass" }
+
+    root = @span_exporter.finished_spans.find { |span| span.name == "invoke_agent travel-planner" }
+    assert evaluations.values.all? { |record| record.trace_id == root.trace_id }
+    assert evaluations.values.all? { |record| record.span_id == root.span_id }
+  end
+
+  def test_recommendation_count_fails_for_four_hotel_recommendations
+    listings = (1..4).map { |number| { name: "Kyoto Hotel #{number}" } }
+    @hotels = FakeHotelClient.new(listings: listings)
+    @gateway = FakeGatewayClient.new(content: <<~TEXT.strip)
+      Weather: partly cloudy, 18.4°C.
+      1. Kyoto Hotel 1 — option one.
+      2. Kyoto Hotel 2 — option two.
+      3. Kyoto Hotel 3 — option three.
+      4. Kyoto Hotel 4 — option four.
+    TEXT
+
+    build_agent.call(destination: "Kyoto, Japan")
+
+    evaluation = evaluation("recommendation_count")
+    assert_equal 0.0, evaluation.attributes.fetch("gen_ai.evaluation.score.value")
+    assert_equal "fail", evaluation.attributes.fetch("gen_ai.evaluation.score.label")
+    assert_includes evaluation.attributes.fetch("gen_ai.evaluation.explanation"), "4"
+  end
+
+  def test_hotel_grounding_fails_for_a_recommendation_not_returned_by_the_tool
+    @gateway = FakeGatewayClient.new(content: <<~TEXT.strip)
+      Weather: partly cloudy, 18.4°C.
+      1. Imaginary Palace — a luxurious choice.
+    TEXT
+
+    build_agent.call(destination: "Kyoto, Japan")
+
+    evaluation = evaluation("hotel_grounding")
+    assert_equal "fail", evaluation.attributes.fetch("gen_ai.evaluation.score.label")
+    assert_includes evaluation.attributes.fetch("gen_ai.evaluation.explanation"), "Imaginary Palace"
+  end
+
+  def test_weather_grounding_fails_when_the_response_omits_fetched_weather
+    @gateway = FakeGatewayClient.new(content: "1. Hotel Granvia Kyoto — connected to Kyoto Station.")
+
+    build_agent.call(destination: "Kyoto, Japan")
+
+    evaluation = evaluation("weather_grounding")
+    assert_equal "fail", evaluation.attributes.fetch("gen_ai.evaluation.score.label")
+  end
+
+  def test_no_booking_claims_fails_for_unsupported_price_or_availability
+    @gateway = FakeGatewayClient.new(content: <<~TEXT.strip)
+      Weather: partly cloudy, 18.4°C.
+      1. Hotel Granvia Kyoto — rooms are available for $250 per night.
+    TEXT
+
+    build_agent.call(destination: "Kyoto, Japan")
+
+    evaluation = evaluation("no_booking_claims")
+    assert_equal "fail", evaluation.attributes.fetch("gen_ai.evaluation.score.label")
+    assert_includes evaluation.attributes.fetch("gen_ai.evaluation.explanation"), "price or availability"
   end
 
   def test_missing_required_tool_call_is_an_external_failure_and_marks_agent_span_error
@@ -202,5 +280,14 @@ class TravelAgentTest < Minitest::Test
       hotels: @hotels,
       telemetry: RubyOtelDemo::Telemetry
     )
+  end
+
+  def evaluation_records
+    @log_exporter.emitted_log_records.select { |record| record.event_name == "gen_ai.evaluation.result" }
+  end
+
+  def evaluation(name)
+    evaluation_records.find { |record| record.attributes["gen_ai.evaluation.name"] == name } ||
+      flunk("missing #{name} evaluation")
   end
 end

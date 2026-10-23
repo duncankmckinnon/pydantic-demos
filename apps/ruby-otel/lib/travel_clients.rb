@@ -224,6 +224,8 @@ module RubyOtelDemo
       before recommending up to three hotels. Base advice only on returned tool data. Never
       claim live prices, room availability, or that a booking has been made.
       Never claim ratings or reviews; classification stars are unverified OpenStreetMap metadata.
+      State the fetched weather condition or Celsius temperature. Format each hotel recommendation
+      as a numbered line beginning with its exact name from the find_hotels result.
     PROMPT
 
     TOOLS = [

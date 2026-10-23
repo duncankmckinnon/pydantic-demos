@@ -113,10 +113,12 @@ Then show these results in the configured Logfire project:
    conversation, response IDs, token usage, tool-call IDs, and tool results.
 4. Show that both model calls went through Gateway while all telemetry went Ruby → Collector
    → Logfire.
-5. In Metrics, select `ruby_otel.requests` and group by `route` and `outcome`.
-6. Open **Hosts** and select `ruby-otel-local-host` to show CPU, memory, disk, filesystem,
+5. Open **Live Evaluations** to show the four checks emitted for every agent response:
+   recommendation count, hotel grounding, weather grounding, and unsupported booking claims.
+6. In Metrics, select `ruby_otel.requests` and group by `route` and `outcome`.
+7. Open **Hosts** and select `ruby-otel-local-host` to show CPU, memory, disk, filesystem,
    load, network, and process telemetry.
-7. Open **Docker** to show CPU, memory, network, and block I/O for the `ruby-otel` container.
+8. Open **Docker** to show CPU, memory, network, and block I/O for the `ruby-otel` container.
 
 Infrastructure metrics are collected every 30 seconds. The Docker receiver maps Compose
 labels into resource attributes and drops every container whose `compose.service` is not
@@ -153,7 +155,10 @@ docker compose --profile ruby-otel down
 - `POST /travel` accepts `{"destination":"Kyoto, Japan"}`. Its HTTP server span contains
   an `invoke_agent travel-planner` span, two model spans, and live weather/hotel tool spans.
   The agent span records the top-level request and recommendation; the model spans record
-  system instructions and the detailed Responses API conversation. It increments
+  system instructions and the detailed Responses API conversation. Four deterministic online
+  evaluations run on every response and emit trace-correlated `gen_ai.evaluation.result`
+  events for recommendation count, hotel grounding, weather grounding, and unsupported price,
+  availability, or booking claims. It increments
   `ruby_otel.requests` with `route=/travel`. External failures return a sanitized `502` and
   are recorded on the trace. Destinations must be non-empty strings of at most 100
   characters.

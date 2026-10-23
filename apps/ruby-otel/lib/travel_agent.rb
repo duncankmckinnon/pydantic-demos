@@ -3,6 +3,7 @@
 require "json"
 
 require_relative "travel_clients"
+require_relative "travel_evaluators"
 
 module RubyOtelDemo
   class TravelAgent
@@ -48,6 +49,7 @@ module RubyOtelDemo
           )
         end
         capture_messages(agent_span, "gen_ai.output.messages", output_messages(recommendation))
+        evaluate(recommendation.fetch(:content), weather_result, hotel_result)
 
         {
           destination: destination,
@@ -145,6 +147,21 @@ module RubyOtelDemo
       arguments = call.fetch(:arguments)
       destination = arguments.fetch("destination", fallback_destination)
       tool_span(call, arguments) { weather.current(destination: destination) }
+    end
+
+    def evaluate(response, weather_result, hotel_result)
+      TravelEvaluators.evaluate(
+        response: response,
+        weather: weather_result,
+        hotels: hotel_result
+      ).each do |result|
+        telemetry.record_evaluation(
+          name: result.name,
+          passed: result.passed,
+          explanation: result.explanation,
+          target: AGENT_NAME
+        )
+      end
     end
 
     def execute_hotels(call, weather_result)
